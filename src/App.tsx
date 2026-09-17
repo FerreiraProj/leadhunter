@@ -17,7 +17,15 @@ import { WinDealModal } from "./components/leads/WinDealModal";
 import { ToastContainer } from "./components/common/Toast";
 
 const AppContent: React.FC = () => {
-  const { session, activeView, toasts, removeToast, winDealModalLead, closeWinDealModal } = useApp();
+  const { session, activeView, toasts, removeToast, winDealModalLead, closeWinDealModal, isDataLoading } = useApp();
+
+  if (session.isLoggedIn && isDataLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#020408] text-slate-400 font-sans">
+        A carregar dados...
+      </div>
+    );
+  }
 
   if (!session.isLoggedIn) {
     return (

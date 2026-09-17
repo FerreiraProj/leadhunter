@@ -12,3 +12,27 @@ services:
     environment:
       NODE_ENV: production
       GEMINI_API_KEY: ${GEMINI_API_KEY}
+      DATABASE_URL: postgres://leadhunter:${POSTGRES_PASSWORD:-leadhunter}@postgres:5432/leadhunter
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Só para desenvolvimento/teste local. No Coolify, usa antes o recurso
+  # Postgres gerido por ele e aponta o DATABASE_URL da app para lá.
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: leadhunter
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-leadhunter}
+      POSTGRES_DB: leadhunter
+    volumes:
+      - leadhunter_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U leadhunter"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  leadhunter_pgdata:

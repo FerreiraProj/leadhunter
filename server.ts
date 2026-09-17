@@ -3,8 +3,81 @@ import path from "path";
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
+import { pool, initSchema, pruneMissing, toIso } from "./db";
 
 dotenv.config();
+
+const DEFAULT_SCORE_CONFIG = {
+  noWebsite: 50,
+  noEmail: 10,
+  hasPhone: 10,
+  ratingGte45: 15,
+  ratingGte40: 10,
+  ratingGte35: 5,
+  reviewsGte500: 15,
+  reviewsGte200: 10,
+  reviewsGte50: 5,
+  hasSocialNoWebsite: 10,
+  operationalBusiness: 5,
+};
+
+const DEFAULT_SETTINGS = {
+  scoreConfig: DEFAULT_SCORE_CONFIG,
+  aiModel: "gemini-3.7-flash",
+  defaultGmailAccount: "goncalo.fcmacedo@gmail.com",
+  savedGmailAccounts: ["goncalo.fcmacedo@gmail.com"],
+};
+
+const mapBatchRow = (r: any) => ({
+  id: r.id,
+  name: r.name,
+  originalFileName: r.original_file_name ?? undefined,
+  importedAt: toIso(r.imported_at),
+  totalProcessed: r.total_processed,
+  newLeadsCount: r.new_leads_count,
+  updatedLeadsCount: r.updated_leads_count,
+  ignoredCount: r.ignored_count,
+});
+
+const mapNoteRow = (r: any) => ({
+  id: r.id,
+  leadId: r.lead_id,
+  text: r.text,
+  createdAt: toIso(r.created_at),
+  updatedAt: toIso(r.updated_at),
+});
+
+const mapReminderRow = (r: any) => ({
+  id: r.id,
+  leadId: r.lead_id,
+  leadName: r.lead_name ?? undefined,
+  leadCity: r.lead_city ?? undefined,
+  dueAt: toIso(r.due_at),
+  text: r.text ?? undefined,
+  status: r.status,
+  completedAt: r.completed_at ? toIso(r.completed_at) : undefined,
+});
+
+const mapContactLogRow = (r: any) => ({
+  id: r.id,
+  leadId: r.lead_id,
+  type: r.type,
+  date: toIso(r.date),
+  notes: r.notes ?? undefined,
+});
+
+const mapVisitRow = (r: any) => ({
+  id: r.id,
+  leadId: r.lead_id,
+  leadName: r.lead_name ?? undefined,
+  leadCity: r.lead_city ?? undefined,
+  leadAddress: r.lead_address ?? undefined,
+  plannedDate: toIso(r.planned_date),
+  actualDate: r.actual_date ? toIso(r.actual_date) : undefined,
+  realizedAt: r.realized_at ? toIso(r.realized_at) : undefined,
+  status: r.status,
+  resultNotes: r.result_notes ?? undefined,
+});
 
 async function startServer() {
   const app = express();
@@ -256,6 +329,401 @@ Responde EXCLUSIVAMENTE em formato JSON válido com as seguintes chaves:
     }
   });
 
+  // ---- Data persistence (Postgres) ----
+
+  app.get("/api/bootstrap", async (_req, res) => {
+    try {
+      const [leadsRes, batchesRes, notesRes, remindersRes, logsRes, visitsRes, settingsRes] = await Promise.all([
+        pool.query("SELECT data FROM leads ORDER BY created_at ASC"),
+        pool.query("SELECT * FROM import_batches ORDER BY imported_at DESC"),
+        pool.query("SELECT * FROM notes ORDER BY created_at DESC"),
+        pool.query("SELECT * FROM reminders ORDER BY due_at ASC"),
+        pool.query("SELECT * FROM contact_logs ORDER BY date DESC"),
+        pool.query("SELECT * FROM visits ORDER BY planned_date DESC"),
+        pool.query("SELECT data FROM app_settings WHERE id = 'default'"),
+      ]);
+
+      let settings = settingsRes.rows[0]?.data;
+      if (!settings) {
+        settings = DEFAULT_SETTINGS;
+        await pool.query(
+          `INSERT INTO app_settings (id, data) VALUES ('default', $1) ON CONFLICT (id) DO NOTHING`,
+          [JSON.stringify(settings)]
+        );
+      }
+
+      res.json({
+        leads: leadsRes.rows.map((r) => r.data),
+        batches: batchesRes.rows.map(mapBatchRow),
+        notes: notesRes.rows.map(mapNoteRow),
+        reminders: remindersRes.rows.map(mapReminderRow),
+        contactLogs: logsRes.rows.map(mapContactLogRow),
+        visits: visitsRes.rows.map(mapVisitRow),
+        settings,
+      });
+    } catch (error: any) {
+      console.error("Erro ao carregar dados:", error);
+      res.status(500).json({ error: "Falha ao carregar dados da base de dados." });
+    }
+  });
+
+  app.put("/api/batches", async (req, res) => {
+    const batches = Array.isArray(req.body) ? req.body : [];
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const b of batches) {
+        await client.query(
+          `INSERT INTO import_batches (id, name, original_file_name, imported_at, total_processed, new_leads_count, updated_leads_count, ignored_count)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           ON CONFLICT (id) DO UPDATE SET
+             name = EXCLUDED.name,
+             original_file_name = EXCLUDED.original_file_name,
+             imported_at = EXCLUDED.imported_at,
+             total_processed = EXCLUDED.total_processed,
+             new_leads_count = EXCLUDED.new_leads_count,
+             updated_leads_count = EXCLUDED.updated_leads_count,
+             ignored_count = EXCLUDED.ignored_count`,
+          [
+            b.id,
+            b.name,
+            b.originalFileName ?? null,
+            b.importedAt ?? new Date().toISOString(),
+            b.totalProcessed ?? 0,
+            b.newLeadsCount ?? 0,
+            b.updatedLeadsCount ?? 0,
+            b.ignoredCount ?? 0,
+          ]
+        );
+      }
+      await pruneMissing(client, "import_batches", batches.map((b: any) => b.id));
+      await client.query("COMMIT");
+      res.json({ ok: true });
+    } catch (error: any) {
+      await client.query("ROLLBACK");
+      console.error("Erro ao guardar importações:", error);
+      res.status(500).json({ error: "Falha ao guardar importações." });
+    } finally {
+      client.release();
+    }
+  });
+
+  app.put("/api/leads", async (req, res) => {
+    const leads = Array.isArray(req.body) ? req.body : [];
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const lead of leads) {
+        await client.query(
+          `INSERT INTO leads (id, batch_id, data, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT (id) DO UPDATE SET
+             batch_id = EXCLUDED.batch_id,
+             data = EXCLUDED.data,
+             updated_at = EXCLUDED.updated_at`,
+          [
+            lead.id,
+            lead.batchId ?? null,
+            JSON.stringify(lead),
+            lead.createdAt ?? new Date().toISOString(),
+            lead.updatedAt ?? new Date().toISOString(),
+          ]
+        );
+      }
+      await pruneMissing(client, "leads", leads.map((l: any) => l.id));
+      await client.query("COMMIT");
+      res.json({ ok: true });
+    } catch (error: any) {
+      await client.query("ROLLBACK");
+      console.error("Erro ao guardar leads:", error);
+      res.status(500).json({ error: "Falha ao guardar leads." });
+    } finally {
+      client.release();
+    }
+  });
+
+  app.put("/api/notes", async (req, res) => {
+    const notes = Array.isArray(req.body) ? req.body : [];
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const n of notes) {
+        await client.query(
+          `INSERT INTO notes (id, lead_id, text, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT (id) DO UPDATE SET text = EXCLUDED.text, updated_at = EXCLUDED.updated_at`,
+          [n.id, n.leadId, n.text, n.createdAt ?? new Date().toISOString(), n.updatedAt ?? new Date().toISOString()]
+        );
+      }
+      await pruneMissing(client, "notes", notes.map((n: any) => n.id));
+      await client.query("COMMIT");
+      res.json({ ok: true });
+    } catch (error: any) {
+      await client.query("ROLLBACK");
+      console.error("Erro ao guardar notas:", error);
+      res.status(500).json({ error: "Falha ao guardar notas." });
+    } finally {
+      client.release();
+    }
+  });
+
+  app.put("/api/reminders", async (req, res) => {
+    const reminders = Array.isArray(req.body) ? req.body : [];
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const r of reminders) {
+        await client.query(
+          `INSERT INTO reminders (id, lead_id, lead_name, lead_city, due_at, text, status, completed_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           ON CONFLICT (id) DO UPDATE SET
+             lead_name = EXCLUDED.lead_name,
+             lead_city = EXCLUDED.lead_city,
+             due_at = EXCLUDED.due_at,
+             text = EXCLUDED.text,
+             status = EXCLUDED.status,
+             completed_at = EXCLUDED.completed_at`,
+          [
+            r.id,
+            r.leadId,
+            r.leadName ?? null,
+            r.leadCity ?? null,
+            r.dueAt,
+            r.text ?? null,
+            r.status ?? "PENDENTE",
+            r.completedAt ?? null,
+          ]
+        );
+      }
+      await pruneMissing(client, "reminders", reminders.map((r: any) => r.id));
+      await client.query("COMMIT");
+      res.json({ ok: true });
+    } catch (error: any) {
+      await client.query("ROLLBACK");
+      console.error("Erro ao guardar lembretes:", error);
+      res.status(500).json({ error: "Falha ao guardar lembretes." });
+    } finally {
+      client.release();
+    }
+  });
+
+  app.put("/api/contact-logs", async (req, res) => {
+    const logs = Array.isArray(req.body) ? req.body : [];
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const c of logs) {
+        await client.query(
+          `INSERT INTO contact_logs (id, lead_id, type, date, notes)
+           VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT (id) DO UPDATE SET type = EXCLUDED.type, date = EXCLUDED.date, notes = EXCLUDED.notes`,
+          [c.id, c.leadId, c.type, c.date, c.notes ?? null]
+        );
+      }
+      await pruneMissing(client, "contact_logs", logs.map((c: any) => c.id));
+      await client.query("COMMIT");
+      res.json({ ok: true });
+    } catch (error: any) {
+      await client.query("ROLLBACK");
+      console.error("Erro ao guardar registos de contacto:", error);
+      res.status(500).json({ error: "Falha ao guardar registos de contacto." });
+    } finally {
+      client.release();
+    }
+  });
+
+  app.put("/api/visits", async (req, res) => {
+    const visits = Array.isArray(req.body) ? req.body : [];
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const v of visits) {
+        await client.query(
+          `INSERT INTO visits (id, lead_id, lead_name, lead_city, lead_address, planned_date, actual_date, realized_at, status, result_notes)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           ON CONFLICT (id) DO UPDATE SET
+             lead_name = EXCLUDED.lead_name,
+             lead_city = EXCLUDED.lead_city,
+             lead_address = EXCLUDED.lead_address,
+             planned_date = EXCLUDED.planned_date,
+             actual_date = EXCLUDED.actual_date,
+             realized_at = EXCLUDED.realized_at,
+             status = EXCLUDED.status,
+             result_notes = EXCLUDED.result_notes`,
+          [
+            v.id,
+            v.leadId,
+            v.leadName ?? null,
+            v.leadCity ?? null,
+            v.leadAddress ?? null,
+            v.plannedDate ?? null,
+            v.actualDate ?? null,
+            v.realizedAt ?? null,
+            v.status ?? "PENDENTE",
+            v.resultNotes ?? null,
+          ]
+        );
+      }
+      await pruneMissing(client, "visits", visits.map((v: any) => v.id));
+      await client.query("COMMIT");
+      res.json({ ok: true });
+    } catch (error: any) {
+      await client.query("ROLLBACK");
+      console.error("Erro ao guardar visitas:", error);
+      res.status(500).json({ error: "Falha ao guardar visitas." });
+    } finally {
+      client.release();
+    }
+  });
+
+  app.put("/api/settings", async (req, res) => {
+    try {
+      const settings = req.body ?? {};
+      await pool.query(
+        `INSERT INTO app_settings (id, data) VALUES ('default', $1)
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+        [JSON.stringify(settings)]
+      );
+      res.json({ ok: true });
+    } catch (error: any) {
+      console.error("Erro ao guardar definições:", error);
+      res.status(500).json({ error: "Falha ao guardar definições." });
+    }
+  });
+
+  app.post("/api/clear-all", async (_req, res) => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("DELETE FROM leads");
+      await client.query("DELETE FROM import_batches");
+      await client.query("DELETE FROM app_settings");
+      await client.query("COMMIT");
+      res.json({ ok: true });
+    } catch (error: any) {
+      await client.query("ROLLBACK");
+      console.error("Erro ao limpar dados:", error);
+      res.status(500).json({ error: "Falha ao limpar dados." });
+    } finally {
+      client.release();
+    }
+  });
+
+  // One-time migration from a browser's localStorage data (pre-Postgres versions
+  // of the app). Only runs while the leads table is still empty, so it can never
+  // overwrite data already stored in Postgres.
+  app.post("/api/migrate-from-local", async (req, res) => {
+    const client = await pool.connect();
+    try {
+      const existingRes = await client.query("SELECT COUNT(*)::int AS count FROM leads");
+      if (existingRes.rows[0].count > 0) {
+        return res.json({ migrated: false, reason: "already_has_data" });
+      }
+
+      const {
+        leads = [],
+        batches = [],
+        notes = [],
+        reminders = [],
+        contactLogs = [],
+        visits = [],
+        settings,
+      } = req.body ?? {};
+
+      await client.query("BEGIN");
+
+      for (const b of batches) {
+        await client.query(
+          `INSERT INTO import_batches (id, name, original_file_name, imported_at, total_processed, new_leads_count, updated_leads_count, ignored_count)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
+          [
+            b.id,
+            b.name,
+            b.originalFileName ?? null,
+            b.importedAt ?? new Date().toISOString(),
+            b.totalProcessed ?? 0,
+            b.newLeadsCount ?? 0,
+            b.updatedLeadsCount ?? 0,
+            b.ignoredCount ?? 0,
+          ]
+        );
+      }
+      for (const lead of leads) {
+        await client.query(
+          `INSERT INTO leads (id, batch_id, data, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING`,
+          [
+            lead.id,
+            lead.batchId ?? null,
+            JSON.stringify(lead),
+            lead.createdAt ?? new Date().toISOString(),
+            lead.updatedAt ?? new Date().toISOString(),
+          ]
+        );
+      }
+      for (const n of notes) {
+        await client.query(
+          `INSERT INTO notes (id, lead_id, text, created_at, updated_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING`,
+          [n.id, n.leadId, n.text, n.createdAt ?? new Date().toISOString(), n.updatedAt ?? new Date().toISOString()]
+        );
+      }
+      for (const r of reminders) {
+        await client.query(
+          `INSERT INTO reminders (id, lead_id, lead_name, lead_city, due_at, text, status, completed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
+          [r.id, r.leadId, r.leadName ?? null, r.leadCity ?? null, r.dueAt, r.text ?? null, r.status ?? "PENDENTE", r.completedAt ?? null]
+        );
+      }
+      for (const c of contactLogs) {
+        await client.query(
+          `INSERT INTO contact_logs (id, lead_id, type, date, notes) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING`,
+          [c.id, c.leadId, c.type, c.date, c.notes ?? null]
+        );
+      }
+      for (const v of visits) {
+        await client.query(
+          `INSERT INTO visits (id, lead_id, lead_name, lead_city, lead_address, planned_date, actual_date, realized_at, status, result_notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (id) DO NOTHING`,
+          [
+            v.id,
+            v.leadId,
+            v.leadName ?? null,
+            v.leadCity ?? null,
+            v.leadAddress ?? null,
+            v.plannedDate ?? null,
+            v.actualDate ?? null,
+            v.realizedAt ?? null,
+            v.status ?? "PENDENTE",
+            v.resultNotes ?? null,
+          ]
+        );
+      }
+      if (settings) {
+        await client.query(
+          `INSERT INTO app_settings (id, data) VALUES ('default', $1) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+          [JSON.stringify(settings)]
+        );
+      }
+
+      await client.query("COMMIT");
+      res.json({
+        migrated: true,
+        counts: {
+          leads: leads.length,
+          batches: batches.length,
+          notes: notes.length,
+          reminders: reminders.length,
+          contactLogs: contactLogs.length,
+          visits: visits.length,
+        },
+      });
+    } catch (error: any) {
+      await client.query("ROLLBACK");
+      console.error("Erro na migração de dados locais:", error);
+      res.status(500).json({ error: "Falha ao migrar dados locais para a base de dados." });
+    } finally {
+      client.release();
+    }
+  });
+
   // Vite middleware in dev or static files in prod
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -269,6 +737,13 @@ Responde EXCLUSIVAMENTE em formato JSON válido com as seguintes chaves:
     app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
+  }
+
+  try {
+    await initSchema();
+    console.log("[DB] Schema Postgres verificado/criado com sucesso.");
+  } catch (error) {
+    console.error("[DB] Falha ao inicializar o schema Postgres:", error);
   }
 
   app.listen(PORT, "0.0.0.0", () => {

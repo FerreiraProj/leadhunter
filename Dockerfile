@@ -11,8 +11,8 @@ ARG VITE_LOGIN_PASSWORD
 ENV VITE_LOGIN_EMAIL=$VITE_LOGIN_EMAIL
 ENV VITE_LOGIN_PASSWORD=$VITE_LOGIN_PASSWORD
 
-COPY package.json ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY . .
 RUN npm run build
@@ -22,8 +22,8 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
-COPY package.json ./
-RUN npm install --omit=dev && npm cache clean --force
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=builder /app/dist ./dist
 

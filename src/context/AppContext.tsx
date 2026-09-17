@@ -15,6 +15,8 @@ import {
   WonDealDetails,
 } from "../types";
 import { StorageService } from "../utils/storage";
+import { ApiService } from "../utils/api";
+import { generateSampleData } from "../utils/sampleData";
 import { calculatePriorityScore, checkHasWebsite, checkHasSocialMedia } from "../utils/score";
 import { LOGIN_EMAIL, LOGIN_PASSWORD } from "../utils/auth";
 
@@ -55,6 +57,7 @@ interface AppContextType {
   contactLogs: ContactLog[];
   visits: Visit[];
   settings: UserSettings;
+  isDataLoading: boolean;
 
   // Filters
   filters: LeadFilterState;
@@ -70,7 +73,7 @@ interface AppContextType {
   markLeadAsWon: (leadId: string, details: WonDealDetails) => void;
   updateLead: (lead: Lead) => void;
   deleteLead: (leadId: string) => void;
-  
+
   // Notes
   addNote: (leadId: string, text: string) => void;
   updateNote: (noteId: string, text: string) => void;
@@ -135,6 +138,15 @@ const initialFilters: LeadFilterState = {
   hasEmailOnly: false,
 };
 
+const DEFAULT_SETTINGS: UserSettings = {
+  scoreConfig: { ...DEFAULT_SCORE_CONFIG },
+  aiModel: "gemini-3.7-flash",
+  defaultGmailAccount: "goncalo.fcmacedo@gmail.com",
+  savedGmailAccounts: ["goncalo.fcmacedo@gmail.com"],
+};
+
+const MIGRATION_FLAG_KEY = "leadhunter_migrated_to_db";
+
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -148,7 +160,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [contactLogs, setContactLogs] = useState<ContactLog[]>([]);
   const [visits, setVisits] = useState<Visit[]>([]);
-  const [settings, setSettings] = useState<UserSettings>(() => StorageService.getSettings());
+  const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
+  const [isDataLoading, setIsDataLoading] = useState(true);
 
   const [filters, setFilters] = useState<LeadFilterState>(initialFilters);
   const [viewMode, setViewModeState] = useState<"table" | "cards">(() => {
@@ -159,21 +172,112 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [winDealModalLead, setWinDealModalLead] = useState<Lead | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-  // Load initial data - defaults to clean empty state
+  const addToast = useCallback((message: string, type: ToastMessage["type"] = "success") => {
+    const id = Date.now().toString() + Math.random().toString(36).substring(2, 6);
+    setToasts((prev) => [...prev, { id, type, message }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 4500);
+  }, []);
+
+  const onPersistError = useCallback(
+    (err: any, fallbackMsg: string) => {
+      console.error(fallbackMsg, err);
+      addToast(err?.message || fallbackMsg, "error");
+    },
+    [addToast]
+  );
+
+  // Load initial data from Postgres (via /api/bootstrap), migrating any data
+  // still sitting in this browser's localStorage from a previous version of
+  // the app the first time it's detected (one-time, only while the database
+  // is still empty — never overwrites data already in Postgres).
   useEffect(() => {
-    // One-time clear of previous demo data so user starts with 0 leads for their own files
+    let cancelled = false;
+
+    // Legacy one-time cleanup of demo data shipped in early versions of the app.
     if (!localStorage.getItem("leadhunter_cleaned_v1")) {
       StorageService.clearAllData();
       localStorage.setItem("leadhunter_cleaned_v1", "true");
     }
 
-    const data = StorageService.initData();
-    setLeads(data.leads);
-    setBatches(data.batches);
-    setNotes(data.notes);
-    setReminders(data.reminders);
-    setContactLogs(data.contactLogs);
-    setVisits(data.visits);
+    const applyData = (data: {
+      leads: Lead[];
+      batches: ImportBatch[];
+      notes: Note[];
+      reminders: Reminder[];
+      contactLogs: ContactLog[];
+      visits: Visit[];
+      settings?: UserSettings | null;
+    }) => {
+      if (cancelled) return;
+      setLeads(data.leads);
+      setBatches(data.batches);
+      setNotes(data.notes);
+      setReminders(data.reminders);
+      setContactLogs(data.contactLogs);
+      setVisits(data.visits);
+      if (data.settings) setSettings(data.settings);
+    };
+
+    (async () => {
+      try {
+        const bootstrap = await ApiService.getBootstrap();
+        const hasServerData =
+          bootstrap.leads.length > 0 ||
+          bootstrap.batches.length > 0 ||
+          bootstrap.notes.length > 0 ||
+          bootstrap.reminders.length > 0 ||
+          bootstrap.contactLogs.length > 0 ||
+          bootstrap.visits.length > 0;
+
+        if (!hasServerData && !localStorage.getItem(MIGRATION_FLAG_KEY)) {
+          const legacy = StorageService.initData();
+          const legacySettings = StorageService.getSettings();
+          const hasLegacyData =
+            legacy.leads.length > 0 ||
+            legacy.batches.length > 0 ||
+            legacy.notes.length > 0 ||
+            legacy.reminders.length > 0 ||
+            legacy.contactLogs.length > 0 ||
+            legacy.visits.length > 0;
+
+          if (hasLegacyData) {
+            try {
+              await ApiService.migrateFromLocal({ ...legacy, settings: legacySettings });
+              localStorage.setItem(MIGRATION_FLAG_KEY, "true");
+              applyData({ ...legacy, settings: legacySettings });
+              if (!cancelled) addToast("Dados locais migrados para a base de dados com sucesso!", "success");
+              return;
+            } catch (migrationError: any) {
+              // Don't mark as migrated — keep showing the local data and retry next load.
+              console.error("Falha na migração para a base de dados:", migrationError);
+              if (!cancelled) {
+                addToast(
+                  migrationError?.message || "Não foi possível migrar os dados locais para a base de dados.",
+                  "error"
+                );
+              }
+              applyData({ ...legacy, settings: legacySettings });
+              return;
+            }
+          }
+        }
+
+        localStorage.setItem(MIGRATION_FLAG_KEY, "true");
+        applyData(bootstrap);
+      } catch (error: any) {
+        console.error("Erro ao carregar dados da base de dados:", error);
+        if (!cancelled) addToast(error?.message || "Não foi possível ligar à base de dados.", "error");
+      } finally {
+        if (!cancelled) setIsDataLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Sync URL query params on view change and filter change
@@ -189,14 +293,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setSelectedLeadId(leadParam);
       setActiveView("lead_detail");
     }
-  }, []);
-
-  const addToast = useCallback((message: string, type: ToastMessage["type"] = "success") => {
-    const id = Date.now().toString() + Math.random().toString(36).substring(2, 6);
-    setToasts((prev) => [...prev, { id, type, message }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4500);
   }, []);
 
   const removeToast = useCallback((id: string) => {
@@ -230,7 +326,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setFilters(initialFilters);
   };
 
-  // Auth methods
+  // Auth methods (client-side gate only — session stays in this browser's localStorage)
   const login = (email: string, pass: string, profileName?: string): boolean => {
     const normalizedEmail = email.trim().toLowerCase();
 
@@ -290,7 +386,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       l.id === leadId ? { ...l, status: newStatus, updatedAt: new Date().toISOString() } : l
     );
     setLeads(updatedLeads);
-    StorageService.saveLeads(updatedLeads);
+    ApiService.saveLeads(updatedLeads).catch((e) => onPersistError(e, "Falha ao guardar o estado do lead."));
 
     // Auto-create history note
     const noteText = `Estado alterado de ${oldStatus} para ${newStatus}`;
@@ -303,7 +399,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     const updatedNotes = [newNote, ...notes];
     setNotes(updatedNotes);
-    StorageService.saveNotes(updatedNotes);
+    ApiService.saveNotes(updatedNotes).catch((e) => onPersistError(e, "Falha ao guardar a nota."));
 
     addToast(`Estado atualizado para ${newStatus}`);
   };
@@ -330,7 +426,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return l;
     });
     setLeads(updatedLeads);
-    StorageService.saveLeads(updatedLeads);
+    ApiService.saveLeads(updatedLeads).catch((e) => onPersistError(e, "Falha ao guardar o negócio fechado."));
 
     // 1. Complete previous reminders if requested
     let completedRemindersCount = 0;
@@ -369,7 +465,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     setReminders(finalReminders);
-    StorageService.saveReminders(finalReminders);
+    ApiService.saveReminders(finalReminders).catch((e) => onPersistError(e, "Falha ao guardar lembretes."));
 
     // 3. Create Note history
     const renewalFormatted = details.renewalDueDate
@@ -386,7 +482,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     const updatedNotes = [newNote, ...notes];
     setNotes(updatedNotes);
-    StorageService.saveNotes(updatedNotes);
+    ApiService.saveNotes(updatedNotes).catch((e) => onPersistError(e, "Falha ao guardar a nota."));
 
     // 4. Contact Log
     const newLog: ContactLog = {
@@ -398,7 +494,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     const updatedLogs = [newLog, ...contactLogs];
     setContactLogs(updatedLogs);
-    StorageService.saveContactLogs(updatedLogs);
+    ApiService.saveContactLogs(updatedLogs).catch((e) => onPersistError(e, "Falha ao guardar registo de contacto."));
 
     addToast(`🎉 Cliente ${lead.name} angariado com sucesso (${details.dealValue}€)!`, "success");
   };
@@ -422,31 +518,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const updated = leads.map((l) => (l.id === updatedLead.id ? fullUpdatedLead : l));
     setLeads(updated);
-    StorageService.saveLeads(updated);
+    ApiService.saveLeads(updated).catch((e) => onPersistError(e, "Falha ao guardar o lead."));
     addToast("Lead e redes sociais guardados com sucesso!");
   };
 
   const deleteLead = (leadId: string) => {
     const updated = leads.filter((l) => l.id !== leadId);
     setLeads(updated);
-    StorageService.saveLeads(updated);
+    ApiService.saveLeads(updated).catch((e) => onPersistError(e, "Falha ao eliminar o lead."));
 
     // Also remove associated notes, reminders, contactLogs, visits
     const updatedNotes = notes.filter((n) => n.leadId !== leadId);
     setNotes(updatedNotes);
-    StorageService.saveNotes(updatedNotes);
+    ApiService.saveNotes(updatedNotes).catch((e) => onPersistError(e, "Falha ao atualizar notas."));
 
     const updatedReminders = reminders.filter((r) => r.leadId !== leadId);
     setReminders(updatedReminders);
-    StorageService.saveReminders(updatedReminders);
+    ApiService.saveReminders(updatedReminders).catch((e) => onPersistError(e, "Falha ao atualizar lembretes."));
 
     const updatedLogs = contactLogs.filter((c) => c.leadId !== leadId);
     setContactLogs(updatedLogs);
-    StorageService.saveContactLogs(updatedLogs);
+    ApiService.saveContactLogs(updatedLogs).catch((e) => onPersistError(e, "Falha ao atualizar registos de contacto."));
 
     const updatedVisits = visits.filter((v) => v.leadId !== leadId);
     setVisits(updatedVisits);
-    StorageService.saveVisits(updatedVisits);
+    ApiService.saveVisits(updatedVisits).catch((e) => onPersistError(e, "Falha ao atualizar visitas."));
 
     addToast("Lead eliminado com sucesso!", "info");
     if (selectedLeadId === leadId) {
@@ -466,7 +562,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     const updated = [newNote, ...notes];
     setNotes(updated);
-    StorageService.saveNotes(updated);
+    ApiService.saveNotes(updated).catch((e) => onPersistError(e, "Falha ao guardar a nota."));
     addToast("Nota adicionada!");
   };
 
@@ -475,14 +571,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       n.id === noteId ? { ...n, text: text.trim(), updatedAt: new Date().toISOString() } : n
     );
     setNotes(updated);
-    StorageService.saveNotes(updated);
+    ApiService.saveNotes(updated).catch((e) => onPersistError(e, "Falha ao atualizar a nota."));
     addToast("Nota atualizada!");
   };
 
   const deleteNote = (noteId: string) => {
     const updated = notes.filter((n) => n.id !== noteId);
     setNotes(updated);
-    StorageService.saveNotes(updated);
+    ApiService.saveNotes(updated).catch((e) => onPersistError(e, "Falha ao eliminar a nota."));
     addToast("Nota eliminada.", "info");
   };
 
@@ -500,7 +596,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     const updated = [newReminder, ...reminders];
     setReminders(updated);
-    StorageService.saveReminders(updated);
+    ApiService.saveReminders(updated).catch((e) => onPersistError(e, "Falha ao guardar o lembrete."));
     addToast("Lembrete agendado!");
   };
 
@@ -511,14 +607,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         : r
     );
     setReminders(updated);
-    StorageService.saveReminders(updated);
+    ApiService.saveReminders(updated).catch((e) => onPersistError(e, "Falha ao atualizar o lembrete."));
     addToast("Lembrete marcado como concluído!");
   };
 
   const deleteReminder = (reminderId: string) => {
     const updated = reminders.filter((r) => r.id !== reminderId);
     setReminders(updated);
-    StorageService.saveReminders(updated);
+    ApiService.saveReminders(updated).catch((e) => onPersistError(e, "Falha ao eliminar o lembrete."));
     addToast("Lembrete removido.", "info");
   };
 
@@ -539,7 +635,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     const updatedLogs = [newLog, ...contactLogs];
     setContactLogs(updatedLogs);
-    StorageService.saveContactLogs(updatedLogs);
+    ApiService.saveContactLogs(updatedLogs).catch((e) => onPersistError(e, "Falha ao guardar registo de contacto."));
 
     if (autoUpdateStatus) {
       updateLeadStatus(leadId, "CONTACTADO");
@@ -551,7 +647,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const deleteContactLog = (logId: string) => {
     const updated = contactLogs.filter((c) => c.id !== logId);
     setContactLogs(updated);
-    StorageService.saveContactLogs(updated);
+    ApiService.saveContactLogs(updated).catch((e) => onPersistError(e, "Falha ao eliminar registo de contacto."));
     addToast("Registo de contacto removido.", "info");
   };
 
@@ -579,7 +675,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     const updatedLogs = [newLog, ...contactLogs];
     setContactLogs(updatedLogs);
-    StorageService.saveContactLogs(updatedLogs);
+    ApiService.saveContactLogs(updatedLogs).catch((e) => onPersistError(e, "Falha ao guardar registo de contacto."));
 
     // 2. Update Lead status to CONTACTADO + last email info + review if provided
     const updatedLeads = leads.map((l) => {
@@ -596,7 +692,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return l;
     });
     setLeads(updatedLeads);
-    StorageService.saveLeads(updatedLeads);
+    ApiService.saveLeads(updatedLeads).catch((e) => onPersistError(e, "Falha ao guardar o lead."));
 
     // 3. Create Note history
     const newNote: Note = {
@@ -608,7 +704,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     const updatedNotes = [newNote, ...notes];
     setNotes(updatedNotes);
-    StorageService.saveNotes(updatedNotes);
+    ApiService.saveNotes(updatedNotes).catch((e) => onPersistError(e, "Falha ao guardar a nota."));
 
     addToast(`Email registado com sucesso para ${lead?.name || "lead"}!`, "success");
   };
@@ -627,7 +723,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     const updated = [newVisit, ...visits];
     setVisits(updated);
-    StorageService.saveVisits(updated);
+    ApiService.saveVisits(updated).catch((e) => onPersistError(e, "Falha ao guardar a visita."));
     addToast("Visita planeada com sucesso!");
   };
 
@@ -652,7 +748,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         : v
     );
     setVisits(updatedVisits);
-    StorageService.saveVisits(updatedVisits);
+    ApiService.saveVisits(updatedVisits).catch((e) => onPersistError(e, "Falha ao guardar a visita."));
 
     // Automatically create a contact log of type VISITA
     addContactLog(visit.leadId, "VISITA", dateUsed, `Visita realizada: ${resultNotes}`);
@@ -669,14 +765,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       v.id === visitId ? { ...v, status: "SEM_INTERESSE" as const } : v
     );
     setVisits(updatedVisits);
-    StorageService.saveVisits(updatedVisits);
+    ApiService.saveVisits(updatedVisits).catch((e) => onPersistError(e, "Falha ao guardar a visita."));
     addToast("Visita marcada como sem interesse.", "info");
   };
 
   const deleteVisit = (visitId: string) => {
     const updated = visits.filter((v) => v.id !== visitId);
     setVisits(updated);
-    StorageService.saveVisits(updated);
+    ApiService.saveVisits(updated).catch((e) => onPersistError(e, "Falha ao eliminar a visita."));
     addToast("Visita eliminada.", "info");
   };
 
@@ -697,8 +793,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setLeads(finalLeads);
     setBatches(finalBatches);
-    StorageService.saveLeads(finalLeads);
-    StorageService.saveBatches(finalBatches);
+
+    // Batches must be persisted before leads: leads reference batch_id via a
+    // foreign key, so the batch row has to exist first.
+    ApiService.saveBatches(finalBatches)
+      .then(() => ApiService.saveLeads(finalLeads))
+      .catch((e) => onPersistError(e, "Falha ao guardar a importação."));
 
     addToast(
       `Importação concluída: ${newLeads.length} novos, ${updatedLeads.length} atualizados!`,
@@ -709,7 +809,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Settings & Score Recalculation
   const updateSettings = (newSettings: UserSettings) => {
     setSettings(newSettings);
-    StorageService.saveSettings(newSettings);
+    ApiService.saveSettings(newSettings).catch((e) => onPersistError(e, "Falha ao guardar definições."));
     addToast("Definições guardadas com sucesso!");
   };
 
@@ -729,7 +829,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     setLeads(updatedLeads);
-    StorageService.saveLeads(updatedLeads);
+    ApiService.saveLeads(updatedLeads).catch((e) => onPersistError(e, "Falha ao guardar scores recalculados."));
     addToast(`Scores recalculados para todos os ${leads.length} leads!`);
   };
 
@@ -739,7 +839,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       scoreConfig: { ...DEFAULT_SCORE_CONFIG },
     };
     setSettings(newSettings);
-    StorageService.saveSettings(newSettings);
+    ApiService.saveSettings(newSettings).catch((e) => onPersistError(e, "Falha ao guardar definições."));
     recalculateAllScores(DEFAULT_SCORE_CONFIG);
     addToast("Pesos por defeito repostos e scores recalculados!");
   };
@@ -750,35 +850,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       scoreConfig: config,
     };
     setSettings(newSettings);
-    StorageService.saveSettings(newSettings);
+    ApiService.saveSettings(newSettings).catch((e) => onPersistError(e, "Falha ao guardar definições."));
     recalculateAllScores(config);
   };
 
   const clearAllAppData = () => {
-    StorageService.clearAllData();
+    ApiService.clearAll().catch((e) => onPersistError(e, "Falha ao limpar dados da base de dados."));
     setLeads([]);
     setBatches([]);
     setNotes([]);
     setReminders([]);
     setContactLogs([]);
     setVisits([]);
-    setSettings({
-      scoreConfig: { ...DEFAULT_SCORE_CONFIG },
-      aiModel: "gemini-3.7-flash",
-    });
+    setSettings({ ...DEFAULT_SETTINGS });
     addToast("Todos os registos da aplicação foram eliminados.", "info");
   };
 
   const resetAllData = clearAllAppData;
 
   const reloadSampleData = () => {
-    const data = StorageService.loadSampleData();
-    setLeads(data.leads);
-    setBatches(data.batches);
-    setNotes(data.notes);
-    setReminders(data.reminders);
-    setContactLogs(data.contactLogs);
-    setVisits(data.visits);
+    const sample = generateSampleData();
+    setLeads(sample.leads);
+    setBatches(sample.batches);
+    setNotes(sample.notes);
+    setReminders(sample.reminders);
+    setContactLogs(sample.contactLogs);
+    setVisits(sample.visits);
+
+    // Persist in FK-safe order: batches -> leads -> everything that references leads.
+    ApiService.saveBatches(sample.batches)
+      .then(() => ApiService.saveLeads(sample.leads))
+      .then(() =>
+        Promise.all([
+          ApiService.saveNotes(sample.notes),
+          ApiService.saveReminders(sample.reminders),
+          ApiService.saveContactLogs(sample.contactLogs),
+          ApiService.saveVisits(sample.visits),
+        ])
+      )
+      .catch((e) => onPersistError(e, "Falha ao guardar dados de demonstração."));
+
     addToast("Exemplos de demonstração carregados com sucesso!");
   };
 
@@ -817,6 +928,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         contactLogs,
         visits,
         settings,
+        isDataLoading,
 
         filters,
         setFilters,
