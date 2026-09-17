@@ -1,0 +1,6 @@
+{
+  "name": "LeadHunter",
+  "description": "Aplicação de prospeção de clientes e gestão de pipeline de leads para freelancers de desenvolvimento web",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

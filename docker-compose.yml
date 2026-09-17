@@ -1,0 +1,14 @@
+services:
+  leadhunter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_LOGIN_EMAIL: ${VITE_LOGIN_EMAIL:-}
+        VITE_LOGIN_PASSWORD: ${VITE_LOGIN_PASSWORD:-}
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
