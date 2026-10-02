@@ -1,8 +1,9 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import { useApp } from "../../context/AppContext";
 import { Lead, LeadStatus, LEAD_STATUS_CONFIG } from "../../types";
 import { StatusBadge, ScoreBadge, WebsiteBadge } from "../common/Badge";
 import { EmptyState } from "../common/EmptyState";
+import { ConfirmDialog } from "../common/ConfirmDialog";
 import {
   Search,
   SlidersHorizontal,
@@ -26,6 +27,7 @@ import {
   Share2,
   Quote,
   History,
+  Trash2,
 } from "lucide-react";
 
 type SortField = "name" | "city" | "rating" | "reviews" | "priorityScore" | "status";
@@ -43,12 +45,17 @@ export const LeadsListView: React.FC = () => {
     openLeadDetail,
     openAIPitchModal,
     setActiveView,
+    deleteLeads,
   } = useApp();
 
   const [sortField, setSortField] = useState<SortField>("priorityScore");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [currentPage, setCurrentPage] = useState<number>(1);
   const pageSize = 25;
+
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
+  const selectAllCheckboxRef = useRef<HTMLInputElement>(null);
 
   // Extract unique cities from all leads
   const uniqueCities = useMemo(() => {
@@ -113,6 +120,12 @@ export const LeadsListView: React.FC = () => {
   useEffect(() => {
     setCurrentPage(1);
   }, [filters, sortField, sortDirection]);
+
+  // Clear selection whenever the filtered set of leads changes, so a bulk
+  // action can never silently target leads that are no longer visible.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [filters]);
 
   // Filter leads
   const filteredLeads = useMemo(() => {
@@ -234,6 +247,44 @@ export const LeadsListView: React.FC = () => {
         return { ...prev, status: [...prev.status, st] };
       }
     });
+  };
+
+  // Multi-select for bulk actions
+  const isAllOnPageSelected = paginatedLeads.length > 0 && paginatedLeads.every((l) => selectedIds.has(l.id));
+  const isSomeOnPageSelected = paginatedLeads.some((l) => selectedIds.has(l.id));
+
+  useEffect(() => {
+    if (selectAllCheckboxRef.current) {
+      selectAllCheckboxRef.current.indeterminate = isSomeOnPageSelected && !isAllOnPageSelected;
+    }
+  }, [isSomeOnPageSelected, isAllOnPageSelected]);
+
+  const toggleSelectLead = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllOnPage = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (isAllOnPageSelected) {
+        paginatedLeads.forEach((l) => next.delete(l.id));
+      } else {
+        paginatedLeads.forEach((l) => next.add(l.id));
+      }
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const handleBulkDelete = () => {
+    deleteLeads(Array.from(selectedIds));
+    setSelectedIds(new Set());
   };
 
   return (
@@ -492,6 +543,32 @@ export const LeadsListView: React.FC = () => {
         </div>
       </div>
 
+      {/* Bulk Actions Bar */}
+      {selectedIds.size > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-rose-950/30 border border-rose-500/30 rounded-2xl px-4 py-3 backdrop-blur-md">
+          <span className="text-xs sm:text-sm font-mono font-semibold text-rose-200">
+            {selectedIds.size} lead{selectedIds.size > 1 ? "s" : ""} selecionado{selectedIds.size > 1 ? "s" : ""}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="px-3 py-1.5 text-xs font-semibold text-slate-300 hover:text-white rounded-lg hover:bg-white/5 transition-colors"
+            >
+              Limpar seleção
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowBulkDeleteConfirm(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition-all shadow-[0_0_12px_rgba(225,29,72,0.35)] active:scale-95"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Eliminar selecionados
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main List Render */}
       {leads.length === 0 ? (
         <EmptyState
@@ -514,6 +591,16 @@ export const LeadsListView: React.FC = () => {
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="border-b border-white/10 bg-white/[0.03] text-[10px] uppercase font-mono font-bold text-slate-400 tracking-wider select-none">
+                  <th className="py-3.5 px-3 w-10">
+                    <input
+                      ref={selectAllCheckboxRef}
+                      type="checkbox"
+                      checked={isAllOnPageSelected}
+                      onChange={toggleSelectAllOnPage}
+                      className="rounded accent-cyan-500 w-3.5 h-3.5 bg-white/10 cursor-pointer"
+                      aria-label="Selecionar todos os leads desta página"
+                    />
+                  </th>
                   <th
                     onClick={() => handleSort("name")}
                     className="py-3.5 px-4 cursor-pointer hover:text-cyan-400 transition-colors"
@@ -590,6 +677,17 @@ export const LeadsListView: React.FC = () => {
                       key={lead.id}
                       className="hover:bg-cyan-950/20 transition-colors group"
                     >
+                      {/* Select */}
+                      <td className="py-3.5 px-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(lead.id)}
+                          onChange={() => toggleSelectLead(lead.id)}
+                          className="rounded accent-cyan-500 w-3.5 h-3.5 bg-white/10 cursor-pointer"
+                          aria-label={`Selecionar ${lead.name}`}
+                        />
+                      </td>
+
                       {/* Name */}
                       <td className="py-3.5 px-4">
                         <div className="flex flex-col gap-1">
@@ -795,7 +893,17 @@ export const LeadsListView: React.FC = () => {
                   </div>
                 )}
                 {/* Floating Score & Status */}
-                <div className="absolute top-3 left-3 flex items-center gap-2">
+                <div
+                  className="absolute top-3 left-3 flex items-center gap-2"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(lead.id)}
+                    onChange={() => toggleSelectLead(lead.id)}
+                    className="rounded accent-cyan-500 w-4 h-4 bg-white/90 border-2 border-white cursor-pointer shadow-md"
+                    aria-label={`Selecionar ${lead.name}`}
+                  />
                   <ScoreBadge score={lead.priorityScore} />
                 </div>
                 <div className="absolute top-3 right-3">
@@ -967,6 +1075,17 @@ export const LeadsListView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Confirm Bulk Delete Dialog */}
+      <ConfirmDialog
+        isOpen={showBulkDeleteConfirm}
+        onClose={() => setShowBulkDeleteConfirm(false)}
+        onConfirm={handleBulkDelete}
+        title="Eliminar Leads Selecionados"
+        message={`Tens a certeza de que desejas eliminar permanentemente ${selectedIds.size} lead${selectedIds.size > 1 ? "s" : ""} e todos os seus lembretes, notas e visitas associados? Esta ação não pode ser revertida.`}
+        confirmText="Eliminar Permanentemente"
+        isDangerous
+      />
     </div>
   );
 };

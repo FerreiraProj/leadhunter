@@ -73,6 +73,7 @@ interface AppContextType {
   markLeadAsWon: (leadId: string, details: WonDealDetails) => void;
   updateLead: (lead: Lead) => void;
   deleteLead: (leadId: string) => void;
+  deleteLeads: (leadIds: string[]) => void;
 
   // Notes
   addNote: (leadId: string, text: string) => void;
@@ -551,6 +552,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const deleteLeads = (leadIds: string[]) => {
+    if (leadIds.length === 0) return;
+    const idSet = new Set(leadIds);
+
+    const updated = leads.filter((l) => !idSet.has(l.id));
+    setLeads(updated);
+    ApiService.saveLeads(updated).catch((e) => onPersistError(e, "Falha ao eliminar os leads."));
+
+    const updatedNotes = notes.filter((n) => !idSet.has(n.leadId));
+    setNotes(updatedNotes);
+    ApiService.saveNotes(updatedNotes).catch((e) => onPersistError(e, "Falha ao atualizar notas."));
+
+    const updatedReminders = reminders.filter((r) => !idSet.has(r.leadId));
+    setReminders(updatedReminders);
+    ApiService.saveReminders(updatedReminders).catch((e) => onPersistError(e, "Falha ao atualizar lembretes."));
+
+    const updatedLogs = contactLogs.filter((c) => !idSet.has(c.leadId));
+    setContactLogs(updatedLogs);
+    ApiService.saveContactLogs(updatedLogs).catch((e) => onPersistError(e, "Falha ao atualizar registos de contacto."));
+
+    const updatedVisits = visits.filter((v) => !idSet.has(v.leadId));
+    setVisits(updatedVisits);
+    ApiService.saveVisits(updatedVisits).catch((e) => onPersistError(e, "Falha ao atualizar visitas."));
+
+    addToast(
+      leadIds.length === 1 ? "Lead eliminado com sucesso!" : `${leadIds.length} leads eliminados com sucesso!`,
+      "info"
+    );
+    if (selectedLeadId && idSet.has(selectedLeadId)) {
+      navigateBackToLeads();
+    }
+  };
+
   // Notes CRUD
   const addNote = (leadId: string, text: string) => {
     if (!text.trim()) return;
@@ -942,6 +976,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         markLeadAsWon,
         updateLead,
         deleteLead,
+        deleteLeads,
 
         addNote,
         updateNote,
