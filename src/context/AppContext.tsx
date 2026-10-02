@@ -131,6 +131,7 @@ const initialFilters: LeadFilterState = {
   websiteFilter: "ALL",
   socialFilter: "ALL",
   city: "",
+  type: "",
   minScore: "",
   minRating: "",
   batchId: "",

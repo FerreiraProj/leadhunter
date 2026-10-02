@@ -59,6 +59,16 @@ export const LeadsListView: React.FC = () => {
     return Array.from(set).sort();
   }, [leads]);
 
+  // Extract unique types from all leads (same field shown in the "Tipo" column)
+  const uniqueTypes = useMemo(() => {
+    const set = new Set<string>();
+    leads.forEach((l) => {
+      const t = (l.type || l.category || "").trim();
+      if (t) set.add(t);
+    });
+    return Array.from(set).sort();
+  }, [leads]);
+
   // Sync filters to URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -74,6 +84,9 @@ export const LeadsListView: React.FC = () => {
 
     if (filters.city) params.set("city", filters.city);
     else params.delete("city");
+
+    if (filters.type) params.set("type", filters.type);
+    else params.delete("type");
 
     if (filters.status.length > 0) params.set("status", filters.status.join(","));
     else params.delete("status");
@@ -133,6 +146,12 @@ export const LeadsListView: React.FC = () => {
       // 4. City filter
       if (filters.city && lead.city?.toLowerCase() !== filters.city.toLowerCase()) {
         return false;
+      }
+
+      // 4b. Type filter
+      if (filters.type) {
+        const leadType = (lead.type || lead.category || "").toLowerCase();
+        if (leadType !== filters.type.toLowerCase()) return false;
       }
 
       // 5. Status filter
@@ -265,7 +284,7 @@ export const LeadsListView: React.FC = () => {
       {/* Filter Control Box */}
       <div className="bg-white/[0.03] p-5 rounded-2xl border border-white/10 backdrop-blur-md shadow-[0_0_25px_rgba(6,182,212,0.06)] space-y-4">
         {/* Row 1: Search & Dropdowns */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
           {/* Search Input */}
           <div className="relative">
             <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
@@ -329,6 +348,22 @@ export const LeadsListView: React.FC = () => {
               {uniqueCities.map((city) => (
                 <option key={city} value={city} className="bg-[#0a101d] text-slate-200">
                   {city}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Type Filter */}
+          <div>
+            <select
+              value={filters.type}
+              onChange={(e) => setFilters((f) => ({ ...f, type: e.target.value }))}
+              className="w-full px-3 py-2 bg-white/[0.04] border border-white/10 rounded-xl text-xs sm:text-sm text-white focus:bg-white/[0.07] focus:outline-hidden focus:border-cyan-400 transition-all truncate font-mono"
+            >
+              <option value="" className="bg-[#0a101d] text-slate-200">Todos os Tipos</option>
+              {uniqueTypes.map((type) => (
+                <option key={type} value={type} className="bg-[#0a101d] text-slate-200">
+                  {type}
                 </option>
               ))}
             </select>

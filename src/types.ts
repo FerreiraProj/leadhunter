@@ -342,6 +342,7 @@ export interface LeadFilterState {
   websiteFilter: "ALL" | "NO_WEBSITE" | "HAS_WEBSITE";
   socialFilter?: "ALL" | "HAS_SOCIAL" | "NO_SOCIAL" | "HAS_INSTAGRAM" | "HAS_FACEBOOK" | "HAS_LINKEDIN" | "SOCIAL_NO_WEBSITE";
   city: string;
+  type: string;
   minScore: number | "";
   minRating: number | "";
   batchId: string;
