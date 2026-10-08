@@ -50,6 +50,9 @@ export const AIPitchModal: React.FC = () => {
     useState<string>(initialDefaultAccount);
   const [showAddAccount, setShowAddAccount] = useState<boolean>(false);
   const [newAccountEmail, setNewAccountEmail] = useState<string>("");
+  const [newAccountLogin, setNewAccountLogin] = useState<string>("");
+  const [editingLoginFor, setEditingLoginFor] = useState<string | null>(null);
+  const [editingLoginValue, setEditingLoginValue] = useState<string>("");
 
   // Form & Customization state
   const [googleReview, setGoogleReview] = useState<string>("");
@@ -134,19 +137,29 @@ export const AIPitchModal: React.FC = () => {
       addToast("Por favor insere um endereço de email válido.", "warning");
       return;
     }
+    const cleanLogin = newAccountLogin.trim().toLowerCase();
 
     const updatedList = Array.from(
       new Set([...savedAccounts, cleanEmail])
     );
 
+    const updatedLoginMap = { ...(settings?.gmailSenderLoginMap || {}) };
+    if (cleanLogin && cleanLogin !== cleanEmail) {
+      updatedLoginMap[cleanEmail] = cleanLogin;
+    } else {
+      delete updatedLoginMap[cleanEmail];
+    }
+
     updateSettings({
       ...settings,
       savedGmailAccounts: updatedList,
       defaultGmailAccount: cleanEmail,
+      gmailSenderLoginMap: updatedLoginMap,
     });
 
     setSelectedSenderAccount(cleanEmail);
     setNewAccountEmail("");
+    setNewAccountLogin("");
     setShowAddAccount(false);
     addToast(`Conta ${cleanEmail} adicionada e selecionada!`);
   };
@@ -158,6 +171,30 @@ export const AIPitchModal: React.FC = () => {
       defaultGmailAccount: account,
     });
     addToast(`Conta ${account} definida como predefinida para envios!`);
+  };
+
+  // The real Google account a sender address needs to authenticate as.
+  // Equal to the address itself unless it's a "send as" alias mapped to a
+  // different login (see gmailSenderLoginMap).
+  const getAuthUserFor = (account: string): string =>
+    settings?.gmailSenderLoginMap?.[account] || account;
+
+  // Save/update/clear the real login account behind a "send as" alias
+  const handleSaveLoginMapping = (account: string, loginEmail: string) => {
+    const cleanLogin = loginEmail.trim().toLowerCase();
+    const updatedMap = { ...(settings?.gmailSenderLoginMap || {}) };
+    if (cleanLogin && cleanLogin !== account) {
+      updatedMap[account] = cleanLogin;
+    } else {
+      delete updatedMap[account];
+    }
+    updateSettings({ ...settings, gmailSenderLoginMap: updatedMap });
+    setEditingLoginFor(null);
+    addToast(
+      cleanLogin && cleanLogin !== account
+        ? `${account} vai agora abrir através da conta ${cleanLogin}.`
+        : `${account} passa a ser tratado como conta de login direta.`
+    );
   };
 
   // Local fallback draft generator with strict PT-PT anti-slop rules.
@@ -342,9 +379,12 @@ ${sender}`;
       session?.email ||
       "";
 
-    // Build the exact authuser parameter so Gmail switches directly to that active account session
-    const authUserParam = accountToUse
-      ? `authuser=${encodeURIComponent(accountToUse)}&`
+    // Gmail's authuser param only switches between real signed-in Google
+    // accounts — if accountToUse is a "send as" alias configured inside a
+    // different Google account, authenticate as that real account instead.
+    const authUserAccount = accountToUse ? getAuthUserFor(accountToUse) : "";
+    const authUserParam = authUserAccount
+      ? `authuser=${encodeURIComponent(authUserAccount)}&`
       : "";
 
     const gmailUrl = `https://mail.google.com/mail/?${authUserParam}view=cm&fs=1&to=${encodedTo}&su=${encodedSubject}&body=${encodedBody}`;
@@ -522,33 +562,96 @@ ${sender}`;
               })}
             </div>
 
+            {/* Login mapping info + editor for the selected account */}
+            <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-400">
+              {getAuthUserFor(selectedSenderAccount) !== selectedSenderAccount ? (
+                <span className="text-cyan-300">
+                  🔗 Abre através da conta Google{" "}
+                  <strong className="text-white">{getAuthUserFor(selectedSenderAccount)}</strong>
+                </span>
+              ) : (
+                <span>Esta conta é tratada como login direto no Google.</span>
+              )}
+
+              {editingLoginFor === selectedSenderAccount ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleSaveLoginMapping(selectedSenderAccount, editingLoginValue);
+                  }}
+                  className="flex items-center gap-1.5"
+                >
+                  <input
+                    type="email"
+                    value={editingLoginValue}
+                    onChange={(e) => setEditingLoginValue(e.target.value)}
+                    placeholder="conta-real@gmail.com"
+                    className="px-2 py-1 bg-white/[0.06] border border-white/10 rounded-lg text-[10px] text-white w-44 focus:outline-hidden focus:border-cyan-400"
+                  />
+                  <button type="submit" className="text-cyan-400 hover:text-cyan-300 font-bold underline">
+                    Guardar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingLoginFor(null)}
+                    className="text-slate-500 hover:text-white"
+                  >
+                    Cancelar
+                  </button>
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingLoginFor(selectedSenderAccount);
+                    const current = getAuthUserFor(selectedSenderAccount);
+                    setEditingLoginValue(current !== selectedSenderAccount ? current : "");
+                  }}
+                  className="text-cyan-400 hover:text-cyan-300 underline font-semibold"
+                >
+                  {getAuthUserFor(selectedSenderAccount) !== selectedSenderAccount
+                    ? "Editar conta de login"
+                    : "É um alias \"Enviar como\"? Associar conta de login"}
+                </button>
+              )}
+            </div>
+
             {/* Inline Add Account Form */}
             {showAddAccount && (
               <form
                 onSubmit={handleAddNewAccount}
-                className="flex items-center gap-2 p-2.5 rounded-xl bg-black/40 border border-white/15"
+                className="space-y-2 p-2.5 rounded-xl bg-black/40 border border-white/15"
               >
+                <div className="flex items-center gap-2">
+                  <input
+                    type="email"
+                    required
+                    value={newAccountEmail}
+                    onChange={(e) => setNewAccountEmail(e.target.value)}
+                    placeholder="Ex: contact@empresa.com ou outra@gmail.com"
+                    className="flex-1 px-3 py-1.5 bg-white/[0.06] border border-white/10 rounded-lg text-xs text-white focus:outline-hidden focus:border-red-400"
+                  />
+                  <button
+                    type="submit"
+                    className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white font-bold rounded-lg text-xs transition-colors shrink-0"
+                  >
+                    Guardar Conta
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddAccount(false)}
+                    className="px-2 py-1.5 text-slate-400 hover:text-white text-xs"
+                  >
+                    Cancelar
+                  </button>
+                </div>
                 <input
                   type="email"
-                  required
-                  value={newAccountEmail}
-                  onChange={(e) => setNewAccountEmail(e.target.value)}
-                  placeholder="Ex: comercial@empresa.com ou outra@gmail.com"
-                  className="flex-1 px-3 py-1.5 bg-white/[0.06] border border-white/10 rounded-lg text-xs text-white focus:outline-hidden focus:border-red-400"
+                  value={newAccountLogin}
+                  onChange={(e) => setNewAccountLogin(e.target.value)}
+                  placeholder={'Só se for um alias "Enviar como": a conta Google real onde está configurado (ex: empresa@gmail.com)'}
+                  className="w-full px-3 py-1.5 bg-white/[0.06] border border-white/10 rounded-lg text-[11px] text-white placeholder-slate-500 focus:outline-hidden focus:border-red-400"
                 />
-                <button
-                  type="submit"
-                  className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white font-bold rounded-lg text-xs transition-colors shrink-0"
-                >
-                  Guardar Conta
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowAddAccount(false)}
-                  className="px-2 py-1.5 text-slate-400 hover:text-white text-xs"
-                >
-                  Cancelar
-                </button>
               </form>
             )}
 
@@ -556,7 +659,15 @@ ${sender}`;
             <div className="p-2.5 rounded-lg bg-black/30 border border-red-500/20 text-[11px] text-slate-300 flex items-start gap-2">
               <span className="text-red-400 font-bold shrink-0">ℹ️</span>
               <p className="leading-relaxed">
-                Ao clicares no botão de envio, o Gmail abrirá a nova mensagem <strong>diretamente autenticado na conta <span className="text-white font-semibold">{selectedSenderAccount}</span></strong> (através do parâmetro oficial <code>authuser={selectedSenderAccount}</code> do Google). Não terás de adivinhar nem mudar de conta manualmente!
+                {getAuthUserFor(selectedSenderAccount) !== selectedSenderAccount ? (
+                  <>
+                    Ao clicares no botão de envio, o Gmail abrirá a nova mensagem <strong>autenticado na conta <span className="text-white font-semibold">{getAuthUserFor(selectedSenderAccount)}</span></strong> (onde <span className="text-white font-semibold">{selectedSenderAccount}</span> está configurado como "Enviar como"). Pode ser preciso escolher <strong>{selectedSenderAccount}</strong> na dropdown "De:" do Gmail, já que o Google não permite pré-selecionar aliases por link.
+                  </>
+                ) : (
+                  <>
+                    Ao clicares no botão de envio, o Gmail abrirá a nova mensagem <strong>diretamente autenticado na conta <span className="text-white font-semibold">{selectedSenderAccount}</span></strong> (através do parâmetro oficial <code>authuser</code> do Google). Não terás de adivinhar nem mudar de conta manualmente!
+                  </>
+                )}
               </p>
             </div>
           </div>

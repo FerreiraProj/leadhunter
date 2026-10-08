@@ -334,6 +334,12 @@ export interface UserSettings {
   aiModel: string;
   defaultGmailAccount?: string;
   savedGmailAccounts?: string[];
+  // Maps a sender address shown/logged in the app (e.g. a custom-domain
+  // "send as" alias like contact@empresa.com) to the real Google account
+  // login it's configured under (e.g. empresa@gmail.com), when they differ.
+  // Needed because Gmail's authuser URL param only switches between actual
+  // signed-in Google accounts, not "send as" aliases within one of them.
+  gmailSenderLoginMap?: Record<string, string>;
 }
 
 export interface LeadFilterState {
