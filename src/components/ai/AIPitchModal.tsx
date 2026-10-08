@@ -116,13 +116,11 @@ export const AIPitchModal: React.FC = () => {
         setApproachAngle("redesign_mockup");
       }
 
-      // Initial template preview
-      generateInitialDraft(
-        lead,
-        defaultContact,
-        lead.featuredGoogleReview || "",
-        session.name || "Gonçalo Macedo"
-      );
+      // The email is only generated when the user clicks "Gerar Email com IA" —
+      // no prefilled draft on open, so every click produces a fresh version.
+      setSubject("");
+      setAlternativeSubjects([]);
+      setEmailBody("");
     }
   }, [lead]);
 
@@ -162,7 +160,8 @@ export const AIPitchModal: React.FC = () => {
     addToast(`Conta ${account} definida como predefinida para envios!`);
   };
 
-  // Local fallback draft generator with strict PT-PT anti-slop rules
+  // Local fallback draft generator with strict PT-PT anti-slop rules.
+  // Only used if the AI request fails, so the user still has something usable.
   function generateInitialDraft(
     targetLead: typeof lead,
     contact: string,
@@ -226,7 +225,7 @@ ${sender}`;
     addToast("Review do Google guardada no lead com sucesso!");
   };
 
-  // Generate with Gemini AI
+  // Generate with OpenAI
   const handleGenerateAI = async () => {
     setLoading(true);
 
@@ -292,8 +291,15 @@ ${sender}`;
         } catch {}
       }
 
-      if (displayError.includes("503") || displayError.includes("high demand") || displayError.includes("UNAVAILABLE")) {
-        displayError = "Servidores Gemini com elevada procura no momento. Foi carregado o modelo base comprovado de alta conversão para poderes enviar já.";
+      if (
+        displayError.includes("503") ||
+        displayError.includes("429") ||
+        displayError.toLowerCase().includes("rate_limit") ||
+        displayError.toLowerCase().includes("overloaded") ||
+        displayError.includes("high demand") ||
+        displayError.includes("UNAVAILABLE")
+      ) {
+        displayError = "Servidores de IA com elevada procura no momento. Foi carregado um rascunho base comprovado de alta conversão para poderes enviar já.";
       }
 
       addToast(displayError, "warning");
@@ -651,12 +657,12 @@ ${sender}`;
             {loading ? (
               <>
                 <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                <span>A gerar email em PT-PT sem slop com Gemini...</span>
+                <span>A gerar email único em PT-PT sem slop...</span>
               </>
             ) : (
               <>
                 <Sparkles className="w-4 h-4 text-cyan-200" />
-                <span>Gerar Email com IA (Gemini 3.7 Flash)</span>
+                <span>{emailBody ? "Gerar Outra Versão com IA" : "Gerar Email com IA"}</span>
               </>
             )}
           </button>
@@ -671,7 +677,8 @@ ${sender}`;
             <button
               type="button"
               onClick={handleCopySubject}
-              className="text-[10px] font-bold text-cyan-400 hover:text-cyan-300 flex items-center gap-1"
+              disabled={!subject}
+              className="text-[10px] font-bold text-cyan-400 hover:text-cyan-300 flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {copiedSubject ? (
                 <Check className="w-3 h-3 text-emerald-400" />
@@ -686,7 +693,8 @@ ${sender}`;
             type="text"
             value={subject}
             onChange={(e) => setSubject(e.target.value)}
-            className="w-full px-3 py-2 bg-black/40 border border-white/15 rounded-xl text-xs font-semibold text-white focus:outline-hidden focus:border-cyan-400"
+            placeholder="Aparece aqui depois de clicares em 'Gerar Email com IA'..."
+            className="w-full px-3 py-2 bg-black/40 border border-white/15 rounded-xl text-xs font-semibold text-white placeholder-slate-500 focus:outline-hidden focus:border-cyan-400"
           />
 
           {/* Alternative Subject Chips */}
@@ -731,7 +739,8 @@ ${sender}`;
               <button
                 type="button"
                 onClick={handleCopyBody}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white font-bold transition-colors text-[10px]"
+                disabled={!emailBody}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white font-bold transition-colors text-[10px] disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {copied ? (
                   <>
@@ -752,7 +761,8 @@ ${sender}`;
             rows={12}
             value={emailBody}
             onChange={(e) => setEmailBody(e.target.value)}
-            className="w-full p-4 bg-black/40 border border-white/15 rounded-xl text-xs leading-relaxed text-slate-200 font-sans focus:outline-hidden focus:border-cyan-400 resize-y"
+            placeholder="Clica em 'Gerar Email com IA' acima para criar o rascunho personalizado deste lead — podes editar livremente depois."
+            className="w-full p-4 bg-black/40 border border-white/15 rounded-xl text-xs leading-relaxed text-slate-200 font-sans placeholder-slate-500 focus:outline-hidden focus:border-cyan-400 resize-y"
           />
 
           {/* Verification Badges */}
@@ -807,7 +817,8 @@ ${sender}`;
             <button
               type="button"
               onClick={handleOpenAndSendGmail}
-              className="flex-1 min-w-[240px] py-3 px-4 bg-gradient-to-r from-red-600 via-rose-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white rounded-xl font-bold shadow-[0_0_20px_rgba(239,68,68,0.35)] flex items-center justify-center gap-2 active:scale-98 transition-all"
+              disabled={!subject || !emailBody}
+              className="flex-1 min-w-[240px] py-3 px-4 bg-gradient-to-r from-red-600 via-rose-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white rounded-xl font-bold shadow-[0_0_20px_rgba(239,68,68,0.35)] flex items-center justify-center gap-2 active:scale-98 transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:from-red-600 disabled:hover:to-amber-600"
             >
               <Mail className="w-4 h-4 text-white" />
               <span>🚀 Abrir no Gmail ({selectedSenderAccount}) & Registar</span>
@@ -818,7 +829,8 @@ ${sender}`;
             <button
               type="button"
               onClick={handleOpenMailto}
-              className="py-3 px-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-semibold flex items-center justify-center gap-1.5 transition-all text-xs"
+              disabled={!subject || !emailBody}
+              className="py-3 px-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-semibold flex items-center justify-center gap-1.5 transition-all text-xs disabled:opacity-40 disabled:cursor-not-allowed"
               title="Abrir no cliente de email predefinido do computador"
             >
               <Send className="w-3.5 h-3.5" />
@@ -830,7 +842,8 @@ ${sender}`;
               <button
                 type="button"
                 onClick={handleManualRegister}
-                className="py-3 px-3 bg-emerald-600/80 hover:bg-emerald-500 text-white rounded-xl font-semibold flex items-center justify-center gap-1.5 transition-all text-xs"
+                disabled={!subject || !emailBody}
+                className="py-3 px-3 bg-emerald-600/80 hover:bg-emerald-500 text-white rounded-xl font-semibold flex items-center justify-center gap-1.5 transition-all text-xs disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Registar que enviaste o email sem abrir nova janela"
               >
                 <Check className="w-3.5 h-3.5" />

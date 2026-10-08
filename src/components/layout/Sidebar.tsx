@@ -140,7 +140,7 @@ export const Sidebar: React.FC = () => {
       <div className="p-4 mx-3 mb-3 rounded-2xl bg-gradient-to-b from-indigo-500/15 to-transparent border border-indigo-500/30 relative overflow-hidden backdrop-blur-xs">
         <div className="flex items-center gap-2 text-indigo-300 font-bold text-xs mb-1">
           <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-          <span>Pitch com IA (Gemini)</span>
+          <span>Pitch com IA</span>
         </div>
         <p className="text-[11px] text-slate-400 leading-relaxed">
           Gera propostas de abordagem comercial personalizadas com 1 clique na ficha do lead.

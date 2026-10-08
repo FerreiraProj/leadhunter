@@ -67,7 +67,7 @@ export const StorageService = {
     }
     const defaultSettings: UserSettings = {
       scoreConfig: { ...DEFAULT_SCORE_CONFIG },
-      aiModel: "gemini-3.7-flash",
+      aiModel: "gpt-4.1-mini",
       defaultGmailAccount: "goncalo.fcmacedo@gmail.com",
       savedGmailAccounts: ["goncalo.fcmacedo@gmail.com"],
     };

@@ -15,7 +15,7 @@ View your app in AI Studio: https://ai.studio/apps/9d8b2885-45e6-492d-8748-56d8e
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Set the `OPENAI_API_KEY` in [.env.local](.env.local) to your OpenAI API key
 3. Opcionalmente, define `VITE_LOGIN_EMAIL` e `VITE_LOGIN_PASSWORD` no `.env.local` para alterar as credenciais de acesso. Por defeito, o email é `goncalo.fcmacedo@gmail.com` e a palavra-passe é `leadhunter`.
 4. Run the app:
    `npm run dev`
@@ -29,7 +29,7 @@ A app inclui um `Dockerfile` multi-stage pronto para o Coolify (build da imagem,
 3. Define a porta do container como `3000` (é a porta exposta pelo `Dockerfile`; o Traefik do Coolify trata do SSL/domínio automaticamente).
 4. Configura as variáveis de ambiente:
    - **Environment Variables** (runtime):
-     - `GEMINI_API_KEY` — obrigatória para os endpoints de IA.
+     - `OPENAI_API_KEY` — obrigatória para os endpoints de IA.
      - `DATABASE_URL` — obrigatória, a connection string do recurso Postgres criado no passo 1.
    - **Build Variables** (usadas apenas durante o `docker build`, porque o Vite as embebe no bundle do frontend): `VITE_LOGIN_EMAIL` e `VITE_LOGIN_PASSWORD`, caso queiras alterar as credenciais de acesso por defeito.
 5. Ativa o **Health Check** do Coolify apontando para `GET /api/health` (o `Dockerfile` já define um `HEALTHCHECK` interno equivalente).
@@ -40,5 +40,5 @@ Se já tinhas dados guardados no `localStorage` do browser de uma versão anteri
 Para testar localmente com Docker antes de enviar para o servidor (já inclui um Postgres descartável só para desenvolvimento):
 
 ```bash
-GEMINI_API_KEY=a_tua_chave docker compose up --build
+OPENAI_API_KEY=a_tua_chave docker compose up --build
 ```

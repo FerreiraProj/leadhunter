@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import dotenv from "dotenv";
-import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
 import { createServer as createViteServer } from "vite";
 import { pool, initSchema, pruneMissing, toIso } from "./db";
 
@@ -23,10 +23,22 @@ const DEFAULT_SCORE_CONFIG = {
 
 const DEFAULT_SETTINGS = {
   scoreConfig: DEFAULT_SCORE_CONFIG,
-  aiModel: "gemini-3.7-flash",
+  aiModel: "gpt-4.1-mini",
   defaultGmailAccount: "goncalo.fcmacedo@gmail.com",
   savedGmailAccounts: ["goncalo.fcmacedo@gmail.com"],
 };
+
+// Small nudges injected at random so two emails for the same lead never read
+// like the exact same template filled in twice — the model is still bound by
+// the mandatory structure/offer below, this only varies how it gets there.
+const VARIATION_HINTS = [
+  "Varia a forma como começas a frase de contexto — evita começar sempre por 'Estava a pesquisar'; podes começar pela cidade, pelo setor de atividade, ou diretamente pela review.",
+  "Usa uma transição diferente entre o elogio à reputação e a observação sobre não terem site — torna-a mais fluida e menos previsível.",
+  "Escreve com frases mais curtas e diretas nesta versão, como alguém que escreve rápido mas com cuidado.",
+  "Usa uma ou duas frases ligeiramente mais longas e conversacionais, como se estivesses a explicar a ideia a um amigo empresário.",
+  "Reformula a pergunta final com palavras diferentes de 'Posso enviar-vos o link da demonstração?', mantendo o mesmo sentido.",
+  "Varia a forma como introduzes a citação da review do cliente, sem usar sempre 'Li um comentário de um cliente que dizia'.",
+];
 
 const mapBatchRow = (r: any) => ({
   id: r.id,
@@ -85,20 +97,13 @@ async function startServer() {
 
   app.use(express.json({ limit: "50mb" }));
 
-  // Shared Gemini client initializer with telemetry header
-  const getGeminiClient = (customApiKey?: string) => {
-    const key = customApiKey || process.env.GEMINI_API_KEY;
+  // Shared OpenAI client initializer
+  const getOpenAIClient = (customApiKey?: string) => {
+    const key = customApiKey || process.env.OPENAI_API_KEY;
     if (!key) {
-      throw new Error("GEMINI_API_KEY não configurada no servidor ou nas definições.");
+      throw new Error("OPENAI_API_KEY não configurada no servidor ou nas definições.");
     }
-    return new GoogleGenAI({
-      apiKey: key,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
+    return new OpenAI({ apiKey: key });
   };
 
   // Health check
@@ -124,16 +129,12 @@ async function startServer() {
         return res.status(400).json({ error: "Dados do lead inválidos ou nome em falta." });
       }
 
-      const ai = getGeminiClient(customApiKey);
-      
-      // Fallback model list if 503 high demand or temporary failure occurs
-      const requestedModel = modelName || "gemini-3.7-flash";
+      const ai = getOpenAIClient(customApiKey);
+
+      // Fallback model list if the primary model is overloaded or temporarily fails
+      const requestedModel = modelName || "gpt-4.1-mini";
       const candidateModels = Array.from(
-        new Set([
-          requestedModel,
-          "gemini-flash-latest",
-          "gemini-3.1-flash-lite",
-        ])
+        new Set([requestedModel, "gpt-4o-mini", "gpt-4.1"])
       );
 
       const ratingText = lead.rating ? `${lead.rating}` : "5";
@@ -201,6 +202,10 @@ EXIGÊNCIAS OBRIGATÓRIAS:
 
 4. ASSUNTOS DO EMAIL:${avoidListText}
    - Cria um assunto principal e 4 alternativas variadas, humanas e sem clickbait (ex: "Uma ideia para a ${companyName} (sem compromisso)", "Proposta visual para a ${companyName}", "Reputação no Google da ${companyName} & novo site", "Pequena sugestão para a ${companyName}", "Exemplo visual para o site da ${companyName}").
+
+5. VARIAÇÃO E NATURALIDADE (para nunca soar a template nem cair em spam):
+   - Não te limites a preencher a estrutura acima literalmente — reescreve-a com as tuas próprias palavras, como se escrevesses este email pela primeira vez, mantendo o mesmo significado e a mesma oferta.
+   - ${VARIATION_HINTS[Math.floor(Math.random() * VARIATION_HINTS.length)]}
 ${extraInstr}
 
 FORMATO DE RESPOSTA OBRIGATÓRIO (JSON estrito):
@@ -220,18 +225,17 @@ Responde EXCLUSIVAMENTE em formato JSON válido com as seguintes chaves:
       let lastError: any = null;
       let usedModel = candidateModels[0];
 
-      // Try candidate models in succession with retry if high demand (503 / 429) occurs
+      // Try candidate models in succession with retry if overloaded (429 / 500 / 503) occurs
       for (const modelToTry of candidateModels) {
         try {
           console.log(`[AI Pitch] A tentar gerar com o modelo: ${modelToTry}...`);
-          const response = await ai.models.generateContent({
+          const response = await ai.chat.completions.create({
             model: modelToTry,
-            contents: prompt,
-            config: {
-              responseMimeType: "application/json",
-            },
+            messages: [{ role: "user", content: prompt }],
+            response_format: { type: "json_object" },
+            temperature: 1,
           });
-          responseText = response.text || "{}";
+          responseText = response.choices[0]?.message?.content || "{}";
           usedModel = modelToTry;
           break; // Success!
         } catch (err: any) {
@@ -277,10 +281,18 @@ Responde EXCLUSIVAMENTE em formato JSON válido com as seguintes chaves:
     } catch (error: any) {
       console.error("Erro ao gerar pitch:", error);
       
-      // Provide a clean, human-friendly error message if 503 occurs
+      // Provide a clean, human-friendly error message if the provider is overloaded
       let cleanErrorMessage = error.message || "Falha ao gerar pitch de IA.";
-      if (typeof cleanErrorMessage === "string" && (cleanErrorMessage.includes("503") || cleanErrorMessage.includes("high demand") || cleanErrorMessage.includes("UNAVAILABLE"))) {
-        cleanErrorMessage = "Os servidores do Gemini estão momentaneamente com elevada procura. O LeadHunter tentou modelos alternativos mas podes tentar novamente dentro de segundos ou usar o rascunho de alta conversão gerado localmente.";
+      if (
+        typeof cleanErrorMessage === "string" &&
+        (cleanErrorMessage.includes("503") ||
+          cleanErrorMessage.includes("429") ||
+          cleanErrorMessage.includes("rate_limit") ||
+          cleanErrorMessage.includes("high demand") ||
+          cleanErrorMessage.toLowerCase().includes("overloaded") ||
+          cleanErrorMessage.includes("UNAVAILABLE"))
+      ) {
+        cleanErrorMessage = "Os servidores de IA estão momentaneamente com elevada procura. O LeadHunter tentou modelos alternativos mas podes tentar novamente dentro de segundos ou usar o rascunho de alta conversão gerado localmente.";
       }
 
       res.status(500).json({
@@ -293,10 +305,10 @@ Responde EXCLUSIVAMENTE em formato JSON válido com as seguintes chaves:
   app.post("/api/ai/test", async (req, res) => {
     try {
       const { customApiKey, modelName } = req.body;
-      const ai = getGeminiClient(customApiKey);
-      const requestedModel = modelName || "gemini-3.7-flash";
+      const ai = getOpenAIClient(customApiKey);
+      const requestedModel = modelName || "gpt-4.1-mini";
       const candidateModels = Array.from(
-        new Set([requestedModel, "gemini-flash-latest", "gemini-3.1-flash-lite"])
+        new Set([requestedModel, "gpt-4o-mini", "gpt-4.1"])
       );
 
       let successMessage = "";
@@ -304,11 +316,13 @@ Responde EXCLUSIVAMENTE em formato JSON válido com as seguintes chaves:
 
       for (const m of candidateModels) {
         try {
-          const response = await ai.models.generateContent({
+          const response = await ai.chat.completions.create({
             model: m,
-            contents: "Responde apenas com 'Ligação estabelecida com sucesso!' em português.",
+            messages: [
+              { role: "user", content: "Responde apenas com 'Ligação estabelecida com sucesso!' em português." },
+            ],
           });
-          successMessage = `${response.text || "Ligação OK"} (Modelo: ${m})`;
+          successMessage = `${response.choices[0]?.message?.content || "Ligação OK"} (Modelo: ${m})`;
           break;
         } catch (e) {
           lastErr = e;
