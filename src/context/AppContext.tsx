@@ -98,6 +98,7 @@ interface AppContextType {
 
   // Batch Imports
   addBatchAndLeads: (batch: ImportBatch, newLeads: Lead[], updatedLeads: Lead[]) => void;
+  renameBatch: (batchId: string, newName: string) => void;
 
   // Settings & Score
   updateSettings: (newSettings: UserSettings) => void;
@@ -841,6 +842,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
+  // Rename an import batch. Leads keep a denormalized copy of the batch name,
+  // so those are updated too.
+  const renameBatch = (batchId: string, newName: string) => {
+    const name = newName.trim();
+    if (!name) {
+      addToast("O nome do lote não pode estar vazio.", "error");
+      return;
+    }
+    const current = batches.find((b) => b.id === batchId);
+    if (!current || current.name === name) return;
+
+    const finalBatches = batches.map((b) => (b.id === batchId ? { ...b, name } : b));
+    const affected = leads.some((l) => l.batchId === batchId);
+    const finalLeads = affected
+      ? leads.map((l) => (l.batchId === batchId ? { ...l, batchName: name } : l))
+      : leads;
+
+    setBatches(finalBatches);
+    if (affected) setLeads(finalLeads);
+
+    ApiService.saveBatches(finalBatches)
+      .then(() => (affected ? ApiService.saveLeads(finalLeads) : undefined))
+      .catch((e) => onPersistError(e, "Falha ao renomear o lote."));
+
+    addToast("Nome do lote atualizado!");
+  };
+
   // Settings & Score Recalculation
   const updateSettings = (newSettings: UserSettings) => {
     setSettings(newSettings);
@@ -996,6 +1024,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteVisit,
 
         addBatchAndLeads,
+        renameBatch,
 
         updateSettings,
         updateScoreConfig,

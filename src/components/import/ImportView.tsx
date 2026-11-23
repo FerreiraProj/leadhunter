@@ -12,10 +12,13 @@ import {
   Sparkles,
   Download,
   Info,
+  Pencil,
+  Check,
+  X,
 } from "lucide-react";
 
 export const ImportView: React.FC = () => {
-  const { leads, batches, addBatchAndLeads, settings, addToast, setActiveView } = useApp();
+  const { leads, batches, addBatchAndLeads, renameBatch, settings, addToast, setActiveView } = useApp();
 
   const [batchName, setBatchName] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -30,6 +33,26 @@ export const ImportView: React.FC = () => {
   } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Inline rename of previously imported batches
+  const [editingBatchId, setEditingBatchId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
+
+  const startEditBatch = (id: string, name: string) => {
+    setEditingBatchId(id);
+    setEditingName(name);
+  };
+
+  const cancelEditBatch = () => {
+    setEditingBatchId(null);
+    setEditingName("");
+  };
+
+  const saveEditBatch = () => {
+    if (!editingBatchId || !editingName.trim()) return;
+    renameBatch(editingBatchId, editingName);
+    cancelEditBatch();
+  };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -357,7 +380,52 @@ export const ImportView: React.FC = () => {
               <tbody className="divide-y divide-white/5">
                 {batches.map((batch) => (
                   <tr key={batch.id} className="hover:bg-white/[0.04]">
-                    <td className="py-3 px-3 font-bold text-white">{batch.name}</td>
+                    <td className="py-3 px-3 font-bold text-white">
+                      {editingBatchId === batch.id ? (
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="text"
+                            autoFocus
+                            value={editingName}
+                            onChange={(e) => setEditingName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") saveEditBatch();
+                              if (e.key === "Escape") cancelEditBatch();
+                            }}
+                            className="min-w-[180px] w-full px-2 py-1 bg-white/[0.06] border border-cyan-400 rounded-lg text-xs text-white focus:outline-hidden"
+                          />
+                          <button
+                            type="button"
+                            onClick={saveEditBatch}
+                            disabled={!editingName.trim()}
+                            title="Guardar"
+                            className="p-1 rounded-md text-emerald-400 hover:bg-emerald-950/50 disabled:opacity-40"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cancelEditBatch}
+                            title="Cancelar"
+                            className="p-1 rounded-md text-slate-400 hover:bg-white/10"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5 group">
+                          <span>{batch.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => startEditBatch(batch.id, batch.name)}
+                            title="Alterar nome do lote"
+                            className="p-1 rounded-md text-slate-500 hover:text-cyan-300 hover:bg-white/10 opacity-60 group-hover:opacity-100 transition-opacity"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
+                    </td>
                     <td className="py-3 px-3 text-slate-400 font-mono text-[11px]">
                       {batch.originalFileName}
                     </td>
