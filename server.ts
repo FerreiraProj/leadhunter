@@ -123,7 +123,18 @@ async function startServer() {
         senderName,
         avoidSubjects = [],
         customInstructions,
+        approach,
       } = req.body;
+
+      // How the email frames the lead's Google reputation:
+      // - "reputacao": established business with a solid review base (original pitch)
+      // - "crescimento": recent business with few but positive reviews
+      // - "nova": business just starting, no reviews yet
+      // - "site_fraco": has a site, but on a free builder subdomain (no own domain)
+      const pitchApproach: "reputacao" | "crescimento" | "nova" | "site_fraco" =
+        approach === "crescimento" || approach === "nova" || approach === "site_fraco"
+          ? approach
+          : "reputacao";
 
       if (!lead || !lead.name) {
         return res.status(400).json({ error: "Dados do lead inválidos ou nome em falta." });
@@ -163,6 +174,54 @@ async function startServer() {
 
       const extraInstr = customInstructions ? `\nInstruções adicionais do utilizador: ${customInstructions}` : "";
 
+      const reviewsCountText = lead.reviews ? `${lead.reviews}` : "poucas";
+      const hasReviews = !!lead.reviews && Number(lead.reviews) > 0;
+      const ratingLine =
+        pitchApproach === "nova" || (pitchApproach === "site_fraco" && !hasReviews)
+          ? "Ainda sem avaliações no Google"
+          : `${ratingText} estrelas (${pitchApproach === "reputacao" ? reviewsText : reviewsCountText} avaliações)`;
+      const siteText = String(lead.website || "").replace(/^https?:\/\//i, "").replace(/\/$/, "");
+
+      const approachSections = {
+        reputacao: {
+          perfil: "Negócio estabelecido, com uma boa base de avaliações positivas no Google.",
+          contexto: `Estava a pesquisar ${typeText} em ${cityText} e reparei que a ${companyName} tem ${ratingText} estrelas no Google com ${reviewsText} avaliações.`,
+          validacao: reviewQuote
+            ? `Li um comentário de um cliente que dizia: "${reviewQuote}". Isto mostra que têm uma reputação fantástica.`
+            : `Li as avaliações excelentes dos vossos clientes, o que mostra que têm uma reputação fantástica.`,
+          problema: `No entanto, reparei que ainda não têm um site próprio. Num mercado onde a maioria das pessoas pesquisa online antes de escolher, isto pode estar a fazer-vos perder clientes para a concorrência.`,
+          assuntos: `"Uma ideia para a ${companyName} (sem compromisso)", "Proposta visual para a ${companyName}", "Reputação no Google da ${companyName} & novo site", "Pequena sugestão para a ${companyName}", "Exemplo visual para o site da ${companyName}"`,
+        },
+        crescimento: {
+          perfil:
+            "Negócio recente, ainda a construir clientela: tem POUCAS avaliações no Google, mas são positivas. NÃO falar em 'reputação fantástica' nem em muitas avaliações — o tom é de quem reconhece um bom começo.",
+          contexto: `Estava a pesquisar ${typeText} em ${cityText} e encontrei a ${companyName}. Reparei que, apesar de ainda terem ${reviewsCountText} avaliações no Google, são todas muito positivas (${ratingText} estrelas).`,
+          validacao: reviewQuote
+            ? `Um dos vossos clientes escreveu: "${reviewQuote}". É um ótimo sinal para quem está a construir a sua clientela.`
+            : `É um ótimo começo: quem já vos experimentou ficou claramente satisfeito.`,
+          problema: `A questão é que, com poucas avaliações, quem vos encontra pela primeira vez ainda não tem muito em que se basear para escolher. Um site próprio ajuda a dar essa confiança: mostra quem são, o que fazem e transforma mais pesquisas em clientes enquanto as avaliações vão crescendo.`,
+          assuntos: `"Uma ideia para a ${companyName} (sem compromisso)", "Para ajudar a ${companyName} a crescer", "Bom começo da ${companyName} no Google", "Pequena sugestão para a ${companyName}", "Exemplo visual para o site da ${companyName}"`,
+        },
+        nova: {
+          perfil:
+            "Negócio a começar agora, SEM avaliações no Google. NÃO mencionar estrelas, avaliações, comentários de clientes nem reputação. O foco é causar uma boa primeira impressão e ser encontrado desde o primeiro dia.",
+          contexto: `Estava a pesquisar ${typeText} em ${cityText} e reparei que a ${companyName} começou há pouco tempo.`,
+          validacao: `Antes de mais, parabéns pela abertura e boa sorte com este novo projeto.`,
+          problema: `Nesta fase, ainda sem avaliações no Google, quem vos encontra tem pouca informação para decidir. Um site próprio dá-vos credibilidade desde o primeiro dia: mostra o que fazem, como vos contactar e ajuda a conquistar os primeiros clientes.`,
+          assuntos: `"Uma ideia para a ${companyName} (sem compromisso)", "Para o arranque da ${companyName}", "Boa sorte com a ${companyName} + uma ideia", "Pequena sugestão para a ${companyName}", "Exemplo visual para o site da ${companyName}"`,
+        },
+        site_fraco: {
+          perfil: `O negócio JÁ TEM um site, mas está num subdomínio gratuito de um construtor de sites (${siteText}), sem domínio próprio, com aspeto pouco profissional e fraco para SEO. NÃO dizer que não têm site. Ser respeitoso: nunca chamar o site "mau" ou "amador" — apontar factos (endereço gratuito, difícil de memorizar, pouca visibilidade no Google, menos confiança) e a oportunidade de melhorar.`,
+          contexto: `Estava a pesquisar ${typeText} em ${cityText} e encontrei a ${companyName}${hasReviews ? ` (${ratingText} estrelas no Google)` : ""}. Fui ver o vosso site (${siteText}) e reparei que está num endereço gratuito, sem domínio próprio.`,
+          validacao:
+            hasReviews && reviewQuote
+              ? `Um dos vossos clientes escreveu: "${reviewQuote}". Merecem um site à altura desse trabalho.`
+              : `Dá para perceber o cuidado que têm com o negócio, e merece uma presença online à altura.`,
+          problema: `Um endereço destes passa menos confiança a quem vos visita pela primeira vez, é difícil de memorizar e aparece pouco nas pesquisas do Google, porque estes construtores gratuitos limitam muito o SEO. Com um domínio próprio (ex: nomedaempresa.pt) e um site pensado para o Google, ficam mais fáceis de encontrar e com uma imagem mais profissional.`,
+          assuntos: `"Uma ideia para o site da ${companyName} (sem compromisso)", "Um domínio próprio para a ${companyName}", "O site da ${companyName} no Google", "Pequena sugestão para a ${companyName}", "Exemplo visual de um novo site para a ${companyName}"`,
+        },
+      }[pitchApproach];
+
       const prompt = `És um especialista em prospeção comercial personalizada em Portugal.
 A tua missão é redigir um email comercial direto, humano e elegante para a empresa "${companyName}".
 
@@ -170,11 +229,12 @@ DADOS DO LEAD:
 - Empresa: ${companyName}
 - Setor / Atividade: ${typeText}
 - Cidade: ${cityText}
-- Classificação Google: ${ratingText} estrelas (${reviewsText} avaliações)
+- Classificação Google: ${ratingLine}
 - Destinatário: ${contactPerson}
 - Tem Website: ${lead.hasWebsite ? `Sim (${lead.website})` : "Não tem website próprio"}
-- Review real de cliente no Google: ${reviewQuote ? `"${reviewQuote}"` : "Não especificada"}
+- Review real de cliente no Google: ${pitchApproach !== "nova" && (pitchApproach !== "site_fraco" || hasReviews) && reviewQuote ? `"${reviewQuote}"` : "Não especificada"}
 - Nome do remetente: ${effectiveSenderName}
+- Perfil / abordagem a usar: ${approachSections.perfil}
 
 EXIGÊNCIAS OBRIGATÓRIAS:
 1. GRAMÁTICA E VOCABULÁRIO PT-PT (Português de Portugal estrito):
@@ -187,21 +247,17 @@ EXIGÊNCIAS OBRIGATÓRIAS:
 
 3. ESTRUTURA E ESTILO DO EMAIL (respeitar este modelo):
    - Saudação: Olá ${contactPerson},
-   - Contexto: Estava a pesquisar ${typeText} em ${cityText} e reparei que a ${companyName} tem ${ratingText} estrelas no Google com ${reviewsText} avaliações.
-   - Validação social com a Review: ${
-     reviewQuote
-       ? `Li um comentário de um cliente que dizia: "${reviewQuote}". Isto mostra que têm uma reputação fantástica.`
-       : `Li as avaliações excelentes dos vossos clientes, o que mostra que têm uma reputação fantástica.`
-   }
-   - Problema/Oportunidade: No entanto, reparei que ainda não têm um site próprio. Num mercado onde a maioria das pessoas pesquisa online antes de escolher, isto pode estar a fazer-vos perder clientes para a concorrência.
-   - Proposta de valor sem compromisso: A minha proposta: Posso criar e enviar-vos um link com uma proposta visual de como poderia ser o site da ${companyName}?
+   - Contexto: ${approachSections.contexto}
+   - ${pitchApproach === "nova" || (pitchApproach === "site_fraco" && !(hasReviews && reviewQuote)) ? "Ligação pessoal" : "Validação social com a Review"}: ${approachSections.validacao}
+   - Problema/Oportunidade: ${approachSections.problema}
+   - Proposta de valor sem compromisso: A minha proposta: Posso criar e enviar-vos um link com uma proposta visual de como poderia ser o ${pitchApproach === "site_fraco" ? "novo site" : "site"} da ${companyName}?
    - Condições do Mockup: É um trabalho que faço sem compromisso, apenas para vos mostrar o potencial. O link fica ativo por 72 horas para poderem analisar com calma.
    - Valores transparentes: Se gostarem, podemos tornar isto realidade por 149€ no primeiro ano (desenvolvimento completo + alojamento) e 79€/ano nos anos seguintes (com manutenção e até 4 alterações de conteúdo incluídas).
    - Saída educada e Call-To-Action suave: Se não fizer sentido, sem problema. Posso enviar-vos o link da demonstração?
    - Despedida: Cumprimentos, [linha seguinte] ${effectiveSenderName}
 
 4. ASSUNTOS DO EMAIL:${avoidListText}
-   - Cria um assunto principal e 4 alternativas variadas, humanas e sem clickbait (ex: "Uma ideia para a ${companyName} (sem compromisso)", "Proposta visual para a ${companyName}", "Reputação no Google da ${companyName} & novo site", "Pequena sugestão para a ${companyName}", "Exemplo visual para o site da ${companyName}").
+   - Cria um assunto principal e 4 alternativas variadas, humanas e sem clickbait, coerentes com o perfil do negócio (ex: ${approachSections.assuntos}).
 
 5. VARIAÇÃO E NATURALIDADE (para nunca soar a template nem cair em spam):
    - Não te limites a preencher a estrutura acima literalmente — reescreve-a com as tuas próprias palavras, como se escrevesses este email pela primeira vez, mantendo o mesmo significado e a mesma oferta.

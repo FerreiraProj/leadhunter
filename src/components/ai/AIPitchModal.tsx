@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useApp } from "../../context/AppContext";
 import { Modal } from "../common/Modal";
+import { isFreeSubdomainSite } from "../../utils/score";
 import {
   Sparkles,
   Copy,
@@ -22,6 +23,46 @@ import {
   AtSign,
   Layers,
 } from "lucide-react";
+
+type PitchApproach = "reputacao" | "crescimento" | "nova" | "site_fraco";
+
+// Up to this many reviews (with a good rating) a business is treated as
+// still building its clientele.
+const GROWING_MAX_REVIEWS = 20;
+
+const PITCH_APPROACHES: { id: PitchApproach; label: string; description: string }[] = [
+  {
+    id: "reputacao",
+    label: "Reputação estabelecida",
+    description: "Muitas avaliações positivas — destaca a reputação forte no Google.",
+  },
+  {
+    id: "crescimento",
+    label: "Em crescimento",
+    description: "Poucas avaliações, mas positivas — negócio recente a construir clientela.",
+  },
+  {
+    id: "nova",
+    label: "Empresa nova",
+    description: "Ainda sem avaliações — foco na primeira impressão e credibilidade desde o início.",
+  },
+  {
+    id: "site_fraco",
+    label: "Site sem domínio próprio",
+    description: "Site em Wix, WordPress.com, etc. (ex: nome.wixsite.com) — pouco profissional e fraco no Google.",
+  },
+];
+
+const suggestApproach = (
+  reviews?: number | null,
+  rating?: number | null,
+  website?: string | null
+): PitchApproach => {
+  if (isFreeSubdomainSite(website)) return "site_fraco";
+  if (!reviews || reviews <= 0) return "nova";
+  if (reviews <= GROWING_MAX_REVIEWS && (rating ?? 0) >= 4) return "crescimento";
+  return "reputacao";
+};
 
 export const AIPitchModal: React.FC = () => {
   const {
@@ -61,6 +102,7 @@ export const AIPitchModal: React.FC = () => {
   const [senderName, setSenderName] = useState<string>("Gonçalo Macedo");
   const [approachAngle, setApproachAngle] = useState<string>("mockup_72h");
   const [customInstructions, setCustomInstructions] = useState<string>("");
+  const [pitchApproach, setPitchApproach] = useState<PitchApproach>("reputacao");
 
   // AI Output state
   const [loading, setLoading] = useState(false);
@@ -118,6 +160,8 @@ export const AIPitchModal: React.FC = () => {
       } else {
         setApproachAngle("redesign_mockup");
       }
+
+      setPitchApproach(suggestApproach(lead.reviews, lead.rating, lead.website));
 
       // The email is only generated when the user clicks "Gerar Email com IA" —
       // no prefilled draft on open, so every click produces a fresh version.
@@ -213,24 +257,51 @@ export const AIPitchModal: React.FC = () => {
     const reviewsCount = targetLead.reviews ? `${targetLead.reviews}` : "várias";
 
     const defaultSubject = `Uma ideia para a ${company} (sem compromisso)`;
+    const quote = reviewQuote.trim();
+
+    let thirdSubject: string;
+    let intro: string;
+    if (pitchApproach === "site_fraco") {
+      const siteText = (targetLead.website || "").replace(/^https?:\/\//i, "").replace(/\/$/, "");
+      const hasReviews = !!targetLead.reviews && targetLead.reviews > 0;
+      thirdSubject = `Um domínio próprio para a ${company}`;
+      intro = `Estava a pesquisar ${typeText} em ${cityText} e encontrei a ${company}${hasReviews ? `, com ${rating} estrelas no Google` : ""}. Fui ver o vosso site (${siteText}) e reparei que está num endereço gratuito, sem domínio próprio.
+${quote && hasReviews ? `\nUm dos vossos clientes escreveu: "${quote}". Merecem um site à altura desse trabalho.\n` : ""}
+Um endereço destes passa menos confiança a quem vos visita pela primeira vez, é difícil de memorizar e aparece pouco nas pesquisas do Google. Com um domínio próprio (por exemplo, ${company.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "")}.pt) e um site pensado para o Google, ficam mais fáceis de encontrar e com uma imagem mais profissional.`;
+    } else if (pitchApproach === "nova") {
+      thirdSubject = `Para o arranque da ${company}`;
+      intro = `Estava a pesquisar ${typeText} em ${cityText} e reparei que a ${company} começou há pouco tempo. Antes de mais, parabéns pela abertura e boa sorte com este novo projeto.
+
+Nesta fase, ainda sem avaliações no Google, quem vos encontra tem pouca informação para decidir. Um site próprio dá-vos credibilidade desde o primeiro dia: mostra o que fazem, como vos contactar e ajuda a conquistar os primeiros clientes.`;
+    } else if (pitchApproach === "crescimento") {
+      const fewReviews = targetLead.reviews ? `${targetLead.reviews}` : "poucas";
+      thirdSubject = `Para ajudar a ${company} a crescer`;
+      intro = `Estava a pesquisar ${typeText} em ${cityText} e encontrei a ${company}. Reparei que, apesar de ainda terem ${fewReviews} avaliações no Google, são todas muito positivas (${rating} estrelas).
+${quote ? `Um dos vossos clientes escreveu: "${quote}". É um ótimo sinal para quem está a construir a sua clientela.` : `É um ótimo começo: quem já vos experimentou ficou claramente satisfeito.`}
+
+A questão é que, com poucas avaliações, quem vos encontra pela primeira vez ainda não tem muito em que se basear para escolher. Um site próprio ajuda a dar essa confiança e transforma mais pesquisas em clientes enquanto as avaliações vão crescendo.`;
+    } else {
+      thirdSubject = `Reputação no Google da ${company} & novo site`;
+      const reviewLine = quote
+        ? `Li um comentário de um cliente que dizia: "${quote}". Isto mostra que têm uma reputação fantástica.`
+        : `Reparei que têm ${rating} estrelas no Google com ${reviewsCount} avaliações, o que demonstra a vossa excelente reputação.`;
+      intro = `Estava a pesquisar ${typeText} em ${cityText} e reparei que a ${company} tem ${rating} estrelas no Google com ${reviewsCount} avaliações.
+
+${reviewLine}
+No entanto, reparei que ainda não têm um site próprio. Num mercado onde a maioria das pessoas pesquisa online antes de escolher, isto pode estar a fazer-vos perder clientes para a concorrência.`;
+    }
+
     const defaultAltSubjects = [
       `Uma ideia para a ${company} (sem compromisso)`,
       `Proposta visual para a ${company}`,
-      `Reputação no Google da ${company} & novo site`,
+      thirdSubject,
       `Exemplo visual para o site da ${company}`,
       `Pequena sugestão para a ${company} em ${cityText}`,
     ];
 
-    const reviewLine = reviewQuote.trim()
-      ? `Li um comentário de um cliente que dizia: "${reviewQuote.trim()}". Isto mostra que têm uma reputação fantástica.`
-      : `Reparei que têm ${rating} estrelas no Google com ${reviewsCount} avaliações, o que demonstra a vossa excelente reputação.`;
-
     const body = `Olá ${contact},
 
-Estava a pesquisar ${typeText} em ${cityText} e reparei que a ${company} tem ${rating} estrelas no Google com ${reviewsCount} avaliações.
-
-${reviewLine}
-No entanto, reparei que ainda não têm um site próprio. Num mercado onde a maioria das pessoas pesquisa online antes de escolher, isto pode estar a fazer-vos perder clientes para a concorrência.
+${intro}
 
 A minha proposta: Posso criar e enviar-vos um link com uma proposta visual de como poderia ser o site da ${company}?
 
@@ -292,6 +363,7 @@ ${sender}`;
           senderName: senderName.trim(),
           avoidSubjects: Array.from(new Set([...pastSubjects, subject])),
           customInstructions: customInstructions.trim(),
+          approach: pitchApproach,
         }),
       });
 
@@ -673,6 +745,55 @@ ${sender}`;
           </div>
         </div>
 
+        {/* Section 0: Pitch approach (based on the lead's Google reviews) */}
+        <div className="p-4 rounded-xl bg-indigo-950/20 border border-indigo-500/20 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <label className="font-bold text-indigo-300 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Abordagem do Email:</span>
+            </label>
+            {pitchApproach !== suggestApproach(lead.reviews, lead.rating, lead.website) && (
+              <button
+                type="button"
+                onClick={() => setPitchApproach(suggestApproach(lead.reviews, lead.rating, lead.website))}
+                className="text-[10px] font-bold text-indigo-400 hover:text-indigo-300 underline"
+              >
+                Repor sugestão automática
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {PITCH_APPROACHES.map((opt) => {
+              const isSelected = pitchApproach === opt.id;
+              const isSuggested = suggestApproach(lead.reviews, lead.rating, lead.website) === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setPitchApproach(opt.id)}
+                  className={`p-2.5 rounded-xl border text-left transition-all ${
+                    isSelected
+                      ? "bg-indigo-600/25 border-indigo-400 shadow-[0_0_12px_rgba(99,102,241,0.25)]"
+                      : "bg-white/[0.03] hover:bg-white/[0.07] border-white/10"
+                  }`}
+                >
+                  <span className={`block text-xs font-bold ${isSelected ? "text-white" : "text-slate-200"}`}>
+                    {opt.label}
+                    {isSuggested && (
+                      <span className="ml-1.5 text-[9px] px-1.5 py-0.5 bg-white/10 text-indigo-300 rounded font-normal">
+                        Sugerida
+                      </span>
+                    )}
+                  </span>
+                  <span className="block text-[10px] text-slate-400 mt-0.5 leading-snug">
+                    {opt.description}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Section 1: Google Review Customization */}
         <div className="p-4 rounded-xl bg-cyan-950/20 border border-cyan-500/20 space-y-2.5">
           <div className="flex items-center justify-between">
@@ -699,9 +820,14 @@ ${sender}`;
 
           <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
             <span>
-              💡 <em>A IA irá citar este comentário verídico no email para demonstrar pesquisa genuína e autoridade.</em>
+              💡{" "}
+              <em>
+                {pitchApproach === "nova"
+                  ? "Na abordagem \"Empresa nova\" o email não menciona avaliações, por isso este comentário é ignorado."
+                  : "A IA irá citar este comentário verídico no email para demonstrar pesquisa genuína e autoridade."}
+              </em>
             </span>
-            {googleReview && (
+            {googleReview && pitchApproach !== "nova" && (
               <span className="text-emerald-400 font-bold flex items-center gap-1">
                 <Check className="w-3 h-3" /> Review ativa para o email
               </span>
@@ -887,7 +1013,7 @@ ${sender}`;
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-950/40 border border-emerald-500/20 text-emerald-400">
               <Check className="w-3 h-3" /> 📐 Mockup 72h + 149€/79€
             </span>
-            {googleReview && (
+            {googleReview && pitchApproach !== "nova" && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-cyan-950/40 border border-cyan-500/20 text-cyan-300">
                 <Quote className="w-3 h-3" /> Review Google Integrada
               </span>

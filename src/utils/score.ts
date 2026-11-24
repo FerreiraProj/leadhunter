@@ -6,6 +6,54 @@ export function checkHasWebsite(website?: string | null): boolean {
   return trimmed !== "" && trimmed !== "—" && trimmed !== "null" && trimmed !== "undefined";
 }
 
+// Free website-builder hosts: a site on a subdomain of these has no domain of
+// its own (e.g. https://tantolingua.wixsite.com/website).
+const FREE_SITE_HOSTS = [
+  "wixsite.com",
+  "wixstudio.io",
+  "editorx.io",
+  "weebly.com",
+  "wordpress.com",
+  "blogspot.com",
+  "blogspot.pt",
+  "webnode.pt",
+  "webnode.com",
+  "webnode.page",
+  "jimdo.com",
+  "jimdofree.com",
+  "jimdosite.com",
+  "business.site",
+  "negocio.site",
+  "site123.me",
+  "godaddysites.com",
+  "squarespace.com",
+  "strikingly.com",
+  "mystrikingly.com",
+  "carrd.co",
+  "webflow.io",
+  "framer.website",
+  "framer.ai",
+  "canva.site",
+  "ueniweb.com",
+  "netlify.app",
+  "vercel.app",
+  "github.io",
+];
+
+/** True when the website lives on a free builder subdomain instead of its own domain. */
+export function isFreeSubdomainSite(website?: string | null): boolean {
+  if (!checkHasWebsite(website)) return false;
+  const raw = website!.trim();
+  let host = "";
+  try {
+    host = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host === "sites.google.com") return true;
+  return FREE_SITE_HOSTS.some((h) => host.endsWith(`.${h}`));
+}
+
 export function checkHasSocialMedia(lead: Partial<Lead>): boolean {
   const fields = [
     lead.facebook,
